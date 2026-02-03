@@ -30,3 +30,31 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# --- Go / Wails ---
+build/bin/
+build/windows/
+build/darwin/
+build/linux/
+wailsjs/
+# Wailsのフロントエンド生成物はwails dev/build時に自動生成されるため除外
+frontend/wailsjs/
+
+# --- Frontend (Node.js) ---
+frontend/node_modules/
+frontend/dist/
+.eslintcache
+# Viteなどのキャッシュ
+frontend/.vite/
+
+# --- SQLite (重要！) ---
+# 開発中に作成されるローカルDBファイルを除外
+*.db
+*.db-journal
+*.db-wal
+
+# --- Google API Secrets (最重要！) ---
+# 認証情報は絶対に公開してはいけません
+credentials.json
+token.json
+
