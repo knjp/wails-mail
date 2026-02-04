@@ -26,6 +26,11 @@ type MessageSummary struct {
 	Date    string `json:"date"`
 }
 
+type ChannelConfig struct {
+	Name  string `json:"name"`
+	Query string `json:"query"`
+}
+
 type Channel struct {
 	Name string `json:"name"`
 }
@@ -38,6 +43,22 @@ type App struct {
 
 func NewApp() *App {
 	return &App{}
+}
+
+func (a *App) loadChannelsFromJson() {
+	data, err := os.ReadFile("conf/channels.json")
+	if err != nil {
+		return
+	} // ファイルがなければスキップ
+
+	var configs []ChannelConfig
+	json.Unmarshal(data, &configs)
+
+	// DBのチャンネル情報を一旦クリアして入れ直す（または差分更新）
+	a.db.Exec("DELETE FROM channels")
+	for _, c := range configs {
+		a.db.Exec("INSERT INTO channels (name, sql_condition) VALUES (?, ?)", c.Name, c.Query)
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -60,14 +81,9 @@ func (a *App) startup(ctx context.Context) {
 	);`)
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY, name TEXT UNIQUE, sql_condition TEXT);`)
 
-	// 初期チャンネルの投入
-	a.db.Exec(`INSERT OR IGNORE INTO channels (name, sql_condition) VALUES 
-		('All', '1=1'), 
-		('Today', "timestamp >= datetime('now', 'start of day', 'localtime')"),
-		('Google', "sender LIKE '%google.com%'");`)
+	a.loadChannelsFromJson()
 
 	// Gmail API の初期化 (credentials.json と token.json がある前提)
-	// ※ここは以前動いていた認証コードをここに統合してください
 	// a.srv = srv
 	// --- ここから Gmail API の初期化を再開 ---
 	b, err := os.ReadFile("conf/credentials.json")

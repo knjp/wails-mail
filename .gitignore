@@ -58,6 +58,8 @@ frontend/.vite/
 # 認証情報は絶対に公開してはいけません
 credentials.json
 token.json
+#
+channels.json
 
 # TMP ディレクトリも
 tmp/*

@@ -1,0 +1,7 @@
+[
+  { "name": "All", "query": "1=1"},
+  { "name": "gmail", "query": "sender LIKE '%gmail.com%'" },
+  { "name": "重要案件", "query": "sender IN ('boss@example.com', 'client@ex.com') OR subject LIKE '%緊急%'" },
+  { "name": "github", "query": "sender LIKE '%github.com%' OR body LIKE '%repository%'" },
+  { "name": "今日", "query": "timestamp >= datetime('now', 'start of day', 'localtime')" },
+]
