@@ -52,9 +52,13 @@ frontend/.vite/
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
 
 # --- Google API Secrets (最重要！) ---
 # 認証情報は絶対に公開してはいけません
 credentials.json
 token.json
 
+# TMP ディレクトリも
+tmp/*
+!tmp/.gitkeep
