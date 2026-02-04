@@ -1,78 +1,89 @@
 import {useState, useEffect} from 'react';
-// import {GetMessages} from "../wailsjs/go/main/App";
-import {GetMessages, GetMessageBody} from "../wailsjs/go/main/App";
 import './App.css';
-
-//                        <div className="body">{selectedMsg.snippet}...</div>
-//                        <div className="body" dangerouslySetInnerHTML={{ __html: fullBody }} />
+import {SyncMessages, GetMessagesByChannel, GetMessageBody, GetChannels} from "../wailsjs/go/main/App";
 
 function App() {
     const [messages, setMessages] = useState([]);
+    const [tabs, setTabs] = useState([]);
+    const [activeTab, setActiveTab] = useState("All");
     const [selectedMsg, setSelectedMsg] = useState(null);
     const [fullBody, setFullBody] = useState("");
+    const [loadingBody, setLoadingBody] = useState(false);
 
-    const handleSelect = async (m) => {
-        setSelectedMsg(m);
+
+    // 1. 初期起動時にチャンネル一覧を取得
+    useEffect(() => {
+        GetChannels().then(res => {
+            if (res) setTabs(res.map(c => c.name));
+        });
+    }, []);
+
+    // 2. タブ切り替え時にデータを取得
+    useEffect(() => {
+        const loadData = async () => {
+            const data = await GetMessagesByChannel(activeTab);
+            setMessages(data || []);
+            // バックグラウンドで同期
+            SyncMessages().then(async () => {
+                const freshData = await GetMessagesByChannel(activeTab);
+                setMessages(freshData || []);
+            });
+        };
+        loadData();
+    }, [activeTab]);
+
+    const handleSelect = async (msg) => {
+        if (loadingBody) return; // すでに読み込み中なら無視
+    
+        setSelectedMsg(msg);
         setFullBody("読み込み中...");
+        setLoadingBody(true); // ロック開始
+    
         try {
-            const body = await GetMessageBody(m.id);
-            console.log("取得した本文:", body); // ブラウザのコンソールで確認
+            const body = await GetMessageBody(msg.id);
             setFullBody(body);
         } catch (err) {
-            setFullBody("読み込みエラー: " + err);
+            console.error("本文取得エラー:", err);
+            setFullBody("エラーが発生しました。");
+        } finally {
+            setLoadingBody(false); // ロック解除
         }
-        //    const body = await GetMessageBody(m.id);
-        // setFullBody(body);
     };
-
-    useEffect(() => {
-        GetMessages().then(setMessages);
-    }, []);
 
     return (
         <div className="container">
-            {/* 左ペイン：メール一覧 */}
-            <div className="sidebar">
-                {messages.map((m) => (
-                    <div key={m.id} className="mail-item" onClick={() => handleSelect(m)}>
-                        <div className="subject">{m.subject || "(件名なし)"}</div>
-                        <div className="from">{m.from}</div>
-                    </div>
+            <div className="tab-bar">
+                {tabs.map(name => (
+                    <button key={name} className={activeTab === name ? "active" : ""} onClick={() => setActiveTab(name)}>
+                        {name}
+                    </button>
                 ))}
             </div>
-
-            {/* 右ペイン：プレビュー */}
-            {/* 右ペイン（メインコンテンツ）の修正案*/}
-            <div className="main-content">
-                {selectedMsg ? (
-                    <div className="email-view">
-                        {/* ヘッダーセクション */}
-                        <div className="email-header">
-                            <h1 className="email-subject">{selectedMsg.subject}</h1>
-                            <div className="email-meta">
-                                <span className="avatar">{selectedMsg.from[0].toUpperCase()}</span>
-                                <div className="meta-info">
-                                    <div className="email-from">{selectedMsg.from}</div>
-                                    <div className="email-date">2024/XX/XX</div> {/* 本来はDateヘッダーから取得 */}
-                                </div>
+            <div className="main-layout">
+                <div className="sidebar">
+                    {messages.length === 0 && <div className="info">メールがありません</div>}
+                    {messages.map(m => (
+                        <div key={m.id} className={`mail-item ${selectedMsg?.id === m.id ? 'selected' : ''}`} onClick={() => handleSelect(m)}>
+                            <div className="subject">{m.subject}</div>
+                            <div className="from">{m.from}</div>
+                        </div>
+                    ))}
+                </div>
+                <div className="main-content">
+                    {selectedMsg ? (
+                        <div className="email-view">
+                            <div className="email-header"><h3>{selectedMsg.subject}</h3></div>
+                            <div className="email-body-container">
+                                <iframe
+                                    key={selectedMsg.id}
+                                    title="body"
+                                    className="email-body-frame"
+                                    srcDoc={fullBody} 
+                                />
                             </div>
                         </div>
-                        
-                        {/* 本文セクション: iframeで隔離して表示 */}
-                        <div className="email-body-container">
-                            <iframe
-                                title="email-content"
-                                className="email-body-frame"
-                                srcDoc={fullBody} // ここにHTMLを直接流し込む
-                                sandbox="allow-popups" // セキュリティ確保
-                            />
-                        </div>
-                    </div>
-                ) : (
-                    <div className="empty-state">
-                        <p>表示するメールを選択してください</p>
-                    </div>
-                )}
+                    ) : <div className="empty-state">選択してください</div>}
+                </div>
             </div>
         </div>
     );

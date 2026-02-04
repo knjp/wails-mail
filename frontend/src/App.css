@@ -1,106 +1,124 @@
-/* 変数の定義：ここを変えるだけで全体のトーンが変わります */
 :root {
-  --bg-app: #f8fafc;        /* アプリ全体の背景（薄いグレー） */
-  --bg-card: #ffffff;       /* メールの白カード */
-  --sidebar-width: 320px;
-  --accent: #2563eb;        /* 爽やかなブルー */
-  --border: #e2e8f0;
-  --text-main: #1e293b;
-  --text-muted: #64748b;
+  --tab-height: 50px;
+  --sidebar-width: 350px;
+  --accent-blue: #2563eb;
+  --bg-light: #f8fafc;
+  --border-color: #e2e8f0;
 }
 
 body, html, #App {
   margin: 0;
   padding: 0;
-  height: 100%;
-  font-family: 'Inter', -apple-system, sans-serif;
-  background-color: var(--bg-app);
-  color: var(--text-main);
+  height: 100vh;
+  overflow: hidden; /* 全体のスクロールを禁止 */
+  font-family: 'Inter', system-ui, sans-serif;
 }
 
-/* 全体のレイアウト */
+/* 全体の縦積み構造 */
 .container {
   display: flex;
+  flex-direction: column; /* タブバーを上、中身を下にする */
   height: 100vh;
-  width: 100vw;
 }
 
-/* 左ペイン：メールリスト */
+/* タブバーの設定 */
+.tab-bar {
+  height: var(--tab-height);
+  background: white;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 6px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.tab-btn.active {
+  background: #eff6ff;
+  color: var(--accent-blue);
+}
+
+/* 2ペインの横並び設定（ここが重要） */
+.main-layout {
+  display: flex;
+  flex: 1; /* 残りの高さをすべて使う */
+  overflow: hidden;
+}
+
+/* 左ペイン：リスト */
 .sidebar {
   width: var(--sidebar-width);
-  background: var(--bg-card);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
+  border-right: 1px solid var(--border-color);
+  background: white;
+  overflow-y: auto; /* リストだけスクロールさせる */
 }
 
 .mail-item {
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
+  padding: 15px;
+  border-bottom: 1px solid #f1f5f9;
   cursor: pointer;
-  transition: all 0.2s;
 }
 
-.mail-item:hover {
+.mail-item.selected {
   background-color: #f1f5f9;
-}
-
-.mail-item.active {
-  background-color: #eff6ff;
-  border-left: 4px solid var(--accent);
+  border-left: 4px solid var(--accent-blue);
 }
 
 .subject {
   font-weight: 600;
   font-size: 0.95rem;
   margin-bottom: 4px;
+}
+
+.from {
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.snippet-preview {
+  font-size: 0.8rem;
+  color: #94a3b8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.from {
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
-/* 右ペイン：メインビュー */
+/* 右ペイン：本文 */
 .main-content {
   flex: 1;
-  padding: 24px;
+  background: var(--bg-light);
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* 親のスクロールを止める */
+  padding: 20px;
 }
 
 .email-view {
-  background: var(--bg-card);
+  background: white;
   border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-  height: 100%;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  height: 100%;
 }
 
 .email-header {
-  padding: 24px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  background:#64748b
+  padding: 20px;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.email-subject {
-  font-size: 1.25rem;
-  margin: 0 0 12px 0;
-  color: var(--text-main);
-}
-
-/* iframeを綺麗に収める */
 .email-body-container {
   flex: 1;
-  width: 100%;
-  height: 100%;
 }
 
 .email-body-frame {
@@ -109,12 +127,40 @@ body, html, #App {
   border: none;
 }
 
-/* 何も選択されていない時 */
 .empty-state {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--text-muted);
-  font-style: italic;
+  color: #94a3b8;
+}
+
+/* --- ライトモード（基本設定） --- */
+:root {
+  --bg-app: #f8fafc;
+  --bg-card: #ffffff;
+  --text-main: #1e293b;
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+}
+
+/* --- ダークモード（OSの設定がダークの時だけ上書き） --- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-app: #0f172a;    /* 深い紺色 */
+    --bg-card: #1e293b;   /* 少し明るい紺色 */
+    --text-main: #f1f5f9; /* 明るいグレー */
+    --text-muted: #94a3b8;
+    --border: #334155;
+  }
+}
+
+/* 各パーツで変数を使う */
+body {
+  background-color: var(--bg-app);
+  color: var(--text-main);
+}
+.sidebar, .email-view {
+  background-color: var(--bg-card);
+  border-color: var(--border);
 }

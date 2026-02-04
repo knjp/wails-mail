@@ -2,22 +2,38 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
+	_ "modernc.org/sqlite"
 )
+
+type MessageSummary struct {
+	ID      string `json:"id"`
+	From    string `json:"from"`
+	Subject string `json:"subject"`
+	Snippet string `json:"snippet"`
+	Date    string `json:"date"`
+}
+
+type Channel struct {
+	Name string `json:"name"`
+}
 
 type App struct {
 	ctx context.Context
 	srv *gmail.Service
+	db  *sql.DB
 }
 
 func NewApp() *App {
@@ -26,28 +42,57 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	os.MkdirAll("db", 0755)
 
-	// 1. credentials.json を読み込んで config を作成
+	db, err := sql.Open("sqlite", "db/mail_cache.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	db.Exec("PRAGMA journal_mode=WAL")
+	db.Exec("PRAGMA busy_timeout=5000")
+
+	a.db = db
+
+	// テーブル作成
+	a.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
+		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp DATETIME, body TEXT
+	);`)
+	a.db.Exec(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY, name TEXT UNIQUE, sql_condition TEXT);`)
+
+	// 初期チャンネルの投入
+	a.db.Exec(`INSERT OR IGNORE INTO channels (name, sql_condition) VALUES 
+		('All', '1=1'), 
+		('Today', "timestamp >= datetime('now', 'start of day', 'localtime')"),
+		('Google', "sender LIKE '%google.com%'");`)
+
+	// Gmail API の初期化 (credentials.json と token.json がある前提)
+	// ※ここは以前動いていた認証コードをここに統合してください
+	// a.srv = srv
+	// --- ここから Gmail API の初期化を再開 ---
 	b, err := os.ReadFile("conf/credentials.json")
 	if err != nil {
-		log.Fatalf("credentials.json を読み込めません: %v", err)
-	}
-	config, err := google.ConfigFromJSON(b, gmail.GmailReadonlyScope)
-	if err != nil {
-		log.Fatalf("OAuth config を作成できません: %v", err)
-	}
-
-	// 2. token.json からクライアントを作成
-	client, err := a.getClient(config)
-	if err != nil {
-		log.Printf("認証済みクライアントの取得に失敗: %v", err)
+		log.Printf("credentials.json 読み込み失敗: %v", err)
 		return
 	}
 
-	// 3. Gmail サービスを初期化
+	config, err := google.ConfigFromJSON(b, gmail.GmailReadonlyScope)
+	if err != nil {
+		log.Printf("OAuth config 作成失敗: %v", err)
+		return
+	}
+
+	// getClient 関数を使って http.Client を取得
+	client, err := a.getClient(config)
+	if err != nil {
+		log.Printf("Client 取得失敗 (token.json を確認してください): %v", err)
+		return
+	}
+
+	// サービスを構造体のフィールドに代入（これで「API未初期化」が消えます）
 	srv, err := gmail.NewService(ctx, option.WithHTTPClient(client))
 	if err != nil {
-		log.Printf("Gmailサービス作成失敗: %v", err)
+		log.Printf("Gmail サービス作成失敗: %v", err)
 		return
 	}
 	a.srv = srv
@@ -65,64 +110,114 @@ func (a *App) getClient(config *oauth2.Config) (*http.Client, error) {
 	return config.Client(context.Background(), tok), err
 }
 
-// フロントエンドから呼ばれる関数
-func (a *App) GetLabels() ([]string, error) {
+func (a *App) SyncMessages() error {
 	if a.srv == nil {
-		return nil, fmt.Errorf("Gmail API が準備できていません。token.json を確認してください")
+		return fmt.Errorf("API未初期化")
 	}
-
-	res, err := a.srv.Users.Labels.List("me").Do()
+	res, err := a.srv.Users.Messages.List("me").MaxResults(20).Do()
 	if err != nil {
-		return nil, fmt.Errorf("API 実行エラー: %v", err)
+		return err
 	}
 
-	var labels []string
-	for _, l := range res.Labels {
-		labels = append(labels, l.Name)
-	}
-	return labels, nil
-}
-
-type MessageSummary struct {
-	ID      string `json:"id"`
-	Snippet string `json:"snippet"`
-	Subject string `json:"subject"`
-	From    string `json:"from"`
-}
-
-func (a *App) GetMessages() ([]MessageSummary, error) {
-	if a.srv == nil {
-		return nil, fmt.Errorf("API未初期化")
-	}
-
-	res, err := a.srv.Users.Messages.List("me").MaxResults(15).Do()
-	if err != nil {
-		return nil, err
-	}
-
-	var summaries []MessageSummary
 	for _, m := range res.Messages {
-		// metadataを指定して件名と差出人だけ効率的に取得
 		msg, err := a.srv.Users.Messages.Get("me", m.Id).Format("metadata").Do()
 		if err != nil {
 			continue
 		}
 
-		summary := MessageSummary{ID: msg.Id, Snippet: msg.Snippet}
+		// 時間処理
+		// msInt, _ := strconv.ParseInt(msg.InternalDate, 10, 64)
+		t := time.Unix(0, msg.InternalDate*int64(time.Millisecond))
+		timestampStr := t.Format("2006-01-02 15:04:05")
+
+		var sender, subject string
 		for _, h := range msg.Payload.Headers {
-			if h.Name == "Subject" {
-				summary.Subject = h.Value
-			}
 			if h.Name == "From" {
-				summary.From = h.Value
+				sender = h.Value
+			}
+			if h.Name == "Subject" {
+				subject = h.Value
 			}
 		}
-		summaries = append(summaries, summary)
+
+		a.db.Exec(`INSERT OR IGNORE INTO messages (id, sender, subject, snippet, timestamp) VALUES (?, ?, ?, ?, ?)`,
+			msg.Id, sender, subject, msg.Snippet, timestampStr)
 	}
-	return summaries, nil
+	return nil
+}
+
+func (a *App) GetChannels() ([]Channel, error) {
+	rows, err := a.db.Query("SELECT name FROM channels")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []Channel
+	for rows.Next() {
+		var c Channel
+		rows.Scan(&c.Name)
+		res = append(res, c)
+	}
+	return res, nil
+}
+
+func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error) {
+	var condition string
+	err := a.db.QueryRow("SELECT sql_condition FROM channels WHERE name = ?", channelName).Scan(&condition)
+	if err != nil {
+		condition = "1=1"
+	}
+
+	query := fmt.Sprintf("SELECT id, sender, subject, snippet, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	rows, err := a.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []MessageSummary
+	for rows.Next() {
+		var m MessageSummary
+		var ts string
+		rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &ts)
+		m.Date = ts
+		results = append(results, m)
+	}
+	return results, nil
 }
 
 func (a *App) GetMessageBody(id string) (string, error) {
+	// 1. まずは SQLite に本文が保存されていないか確認
+	var cachedBody string
+	err := a.db.QueryRow("SELECT body FROM messages WHERE id = ?", id).Scan(&cachedBody)
+
+	// DBに本文（長さ1以上）があれば、それを即座に返す
+	if err == nil && len(cachedBody) > 0 {
+		fmt.Printf("Cache Hit! ID: %s (SQLiteから取得)\n", id)
+		return cachedBody, nil
+	}
+
+	// 2. なければ Gmail API から取得
+	fmt.Printf("Cache Miss! ID: %s (APIから取得中...)\n", id)
+	msg, err := a.srv.Users.Messages.Get("me", id).Format("full").Do()
+	if err != nil {
+		return "", err
+	}
+
+	body := a.extractBody(msg.Payload)
+
+	// 3. 次回のために SQLite に保存（キャッシュ）しておく
+	go func() {
+		_, err = a.db.Exec("UPDATE messages SET body = ? WHERE id = ?", body, id)
+		if err != nil {
+			fmt.Printf("キャッシュ保存エラー: %v\n", err)
+		}
+	}()
+
+	return body, nil
+}
+
+func (a *App) GetMessageBody_simple(id string) (string, error) {
 	msg, err := a.srv.Users.Messages.Get("me", id).Format("full").Do()
 	if err != nil {
 		return "", err
@@ -151,19 +246,6 @@ func (a *App) extractBody(part *gmail.MessagePart) string {
 	}
 
 	// マルチパート（再帰的に探す）
-	for _, subPart := range part.Parts {
-		if body := a.extractBody(subPart); body != "" {
-			return body
-		}
-	}
-	return ""
-}
-
-func (a *App) extractBody_old(part *gmail.MessagePart) string {
-	if part.Body.Data != "" {
-		data, _ := base64.URLEncoding.DecodeString(part.Body.Data)
-		return string(data)
-	}
 	for _, subPart := range part.Parts {
 		if body := a.extractBody(subPart); body != "" {
 			return body
