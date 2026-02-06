@@ -48,19 +48,67 @@ body, html, #App {
   color: var(--accent-blue);
 }
 
-/* 2ペインの横並び設定（ここが重要） */
+/* 3ペインの横並び設定（ここが重要） */
 .main-layout {
   display: flex;
-  flex: 1; /* 残りの高さをすべて使う */
+  height: 100vh;
+  width: 100vw;
   overflow: hidden;
 }
 
+/* 一番左：チャンネル (Slackスタイル) */
+.channel-sidebar {
+  width: 200px;
+  background-color: #1a1d21; /* ダークな背景 */
+  color: #d1d2d3;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.sidebar-header {
+  padding: 20px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  color: #9b9da1;
+}
+
+.channel-item {
+  padding: 8px 20px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: background 0.2s;
+}
+
+.channel-item:hover {
+  background-color: #2d3136;
+}
+
+.channel-item.active {
+  background-color: #1164a3; /* Slack風の青 */
+  color: white;
+}
+
 /* 左ペイン：リスト */
-.sidebar {
-  width: var(--sidebar-width);
+.mail-list-pane {
+  width: 350px;
   border-right: 1px solid var(--border-color);
   background: white;
-  overflow-y: auto; /* リストだけスクロールさせる */
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.pane-header {
+  padding: 15px;
+  font-weight: bold;
+  border-bottom: 1px solid var(--border-color);
+  background: #fff;
+}
+
+.list-container {
+  flex: 1;
+  overflow-y: auto;
 }
 
 .mail-item {

@@ -77,9 +77,16 @@ func (a *App) startup(ctx context.Context) {
 
 	// テーブル作成
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
-		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp DATETIME, body TEXT
+		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp DATETIME, body TEXT, is_read INTEGER DEFAULT 0
 	);`)
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY, name TEXT UNIQUE, sql_condition TEXT);`)
+
+	// 差出人で検索・ソートするためのインデックス
+	a.db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender);")
+
+	// 日付（今日、今週など）で検索・ソートするためのインデックス
+	a.db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);")
+	fmt.Println("✅ インデックスの作成/確認が完了しました")
 
 	a.loadChannelsFromJson()
 
@@ -92,7 +99,7 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 
-	config, err := google.ConfigFromJSON(b, gmail.GmailReadonlyScope)
+	config, err := google.ConfigFromJSON(b, gmail.GmailModifyScope)
 	if err != nil {
 		log.Printf("OAuth config 作成失敗: %v", err)
 		return
@@ -116,9 +123,30 @@ func (a *App) startup(ctx context.Context) {
 
 // getClient は token.json を読み込んで http.Client を返します
 func (a *App) getClient(config *oauth2.Config) (*http.Client, error) {
-	f, err := os.Open("conf/token.json")
+	tokFile := "conf/token.json"
+	f, err := os.Open(tokFile)
 	if err != nil {
-		return nil, err
+		// token.json がない場合、認証URLを生成して表示
+		authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
+		fmt.Println("\n--- 🔑 Google 認証が必要です ---")
+		fmt.Println("以下のURLをブラウザで開き、表示されたコードをここに入力してください:")
+		fmt.Printf("\n%v\n\n", authURL)
+
+		var authCode string
+		fmt.Print("認証コードを入力: ")
+		if _, err := fmt.Scan(&authCode); err != nil {
+			return nil, fmt.Errorf("コードの読み取りに失敗: %v", err)
+		}
+
+		tok, err := config.Exchange(context.TODO(), authCode)
+		if err != nil {
+			return nil, fmt.Errorf("トークン取得に失敗: %v", err)
+		}
+
+		// 新しい通行証（token.json）を保存
+		saveToken(tokFile, tok)
+		return config.Client(context.Background(), tok), nil
+		//return nil, err
 	}
 	defer f.Close()
 	tok := &oauth2.Token{}
@@ -126,6 +154,16 @@ func (a *App) getClient(config *oauth2.Config) (*http.Client, error) {
 	return config.Client(context.Background(), tok), err
 }
 
+// トークン保存用ヘルパー
+func saveToken(path string, token *oauth2.Token) {
+	fmt.Printf("トークンを保存中: %s\n", path)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		log.Fatalf("保存失敗: %v", err)
+	}
+	defer f.Close()
+	json.NewEncoder(f).Encode(token)
+}
 func (a *App) SyncMessages() error {
 	if a.srv == nil {
 		return fmt.Errorf("API未初期化")
@@ -184,7 +222,8 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 		condition = "1=1"
 	}
 
-	query := fmt.Sprintf("SELECT id, sender, subject, snippet, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	query := fmt.Sprintf("SELECT id, sender, subject, snippet, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	// query := fmt.Sprintf("SELECT id, sender, subject, snippet, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	rows, err := a.db.Query(query)
 	if err != nil {
 		return nil, err
@@ -200,6 +239,25 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 		results = append(results, m)
 	}
 	return results, nil
+}
+
+func (a *App) markAsRead(id string) error {
+	if a.srv == nil {
+		return nil
+	}
+	// ラベル変更リクエストの作成
+	batch := &gmail.BatchModifyMessagesRequest{
+		RemoveLabelIds: []string{"UNREAD"},
+		Ids:            []string{id},
+	}
+	// Googleサーバーへ送信
+	err := a.srv.Users.Messages.BatchModify("me", batch).Do()
+	if err != nil {
+		return err
+	}
+
+	_, err = a.db.Exec("UPDATE messages SET is_read = 1 WHERE id = ?", id)
+	return err
 }
 
 func (a *App) GetMessageBody(id string) (string, error) {
@@ -219,6 +277,14 @@ func (a *App) GetMessageBody(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	// gmail で既読に変更
+	go func() {
+		err := a.markAsRead(id)
+		if err != nil {
+			fmt.Printf("既読同期失敗: %v\n", err)
+		}
+	}()
 
 	body := a.extractBody(msg.Payload)
 
@@ -268,4 +334,61 @@ func (a *App) extractBody(part *gmail.MessagePart) string {
 		}
 	}
 	return ""
+}
+func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
+	if a.srv == nil {
+		return "", fmt.Errorf("API未初期化")
+	}
+
+	// 1. 最新500件を取得（pageTokenがあれば続きから）
+	req := a.srv.Users.Messages.List("me").MaxResults(500)
+	if pageToken != "" {
+		req.PageToken(pageToken)
+	}
+	res, err := req.Do()
+	if err != nil {
+		return "", err
+	}
+
+	// 2. 500通をループして保存・更新
+	for _, m := range res.Messages {
+		// metadata形式で「ラベル情報」も含めて取得
+		msg, err := a.srv.Users.Messages.Get("me", m.Id).Format("metadata").Do()
+		if err != nil {
+			continue
+		}
+
+		// 既読判定（UNREADラベルがあるか）
+		isRead := 1
+		for _, label := range msg.LabelIds {
+			if label == "UNREAD" {
+				isRead = 0
+				break
+			}
+		}
+
+		// ヘッダー解析（差出人・件名）
+		var sender, subject string
+		for _, h := range msg.Payload.Headers {
+			if h.Name == "From" {
+				sender = h.Value
+			}
+			if h.Name == "Subject" {
+				subject = h.Value
+			}
+		}
+
+		// 時間処理（JST変換）
+		t := time.Unix(0, msg.InternalDate*int64(time.Millisecond)).In(time.FixedZone("Asia/Tokyo", 9*60*60))
+		ts := t.Format("2006-01-02 15:04:05")
+
+		// 【重要】INSERT OR REPLACE で、既読状態も最新に更新
+		_, err = a.db.Exec(`
+			INSERT OR REPLACE INTO messages (id, sender, subject, snippet, timestamp, is_read) 
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			msg.Id, sender, subject, msg.Snippet, ts, isRead)
+	}
+
+	// 次のページの合言葉を返す
+	return res.NextPageToken, nil
 }
