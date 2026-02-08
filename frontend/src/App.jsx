@@ -1,6 +1,6 @@
 import {useState, useEffect} from 'react';
 import './App.css';
-import {SyncMessages, GetMessagesByChannel, GetMessageBody, GetChannels, SyncHistoricalMessages} from "../wailsjs/go/main/App";
+import {SyncMessages, GetMessagesByChannel, GetMessageBody, GetChannels, SyncHistoricalMessages, GetAISearchResults} from "../wailsjs/go/main/App";
 
 function App() {
     const [messages, setMessages] = useState([]);
@@ -11,6 +11,9 @@ function App() {
     const [loadingBody, setLoadingBody] = useState(false);
     const [loading, setLoading] = useState(false);
     const [nextPageToken, setNextPageToken] = useState("");
+    const [query, setQuery] = useState("");
+    const [results, setResults] = useState([]);
+
 
     const handleLoadMore = async () => {
         setLoading(true);
@@ -22,6 +25,24 @@ function App() {
         const data = await GetMessagesByChannel(activeTab);
         setMessages(data);
         setLoading(false);
+    };
+
+    const handleAISearch = async () => {
+        console.log("AI Searching!! for:", query)
+        try {
+            const results = await GetAISearchResults(query);
+            console.log("Search Results:", results); // ここで中身を確認！
+
+            if(results && results.length > 0){
+                setMessages(results);
+            } else {
+                alert("該当するメールが見つかりませんでした。");
+            }
+            //const filtered = messages.filter(m => searchResults.some(r => r.id === m.id));
+            //setMessages(filtered);
+        } catch (err) {
+            console.error("検索失敗:", err);
+        }
     };
 
     const loadChannels = async (retryCount = 0) => {
@@ -90,8 +111,22 @@ function App() {
     return (
         <div className="container">
             <div className="main-layout">
+
                 {/* 左端：チャンネルリスト（旧タブバー） */}
                 <div className="channel-sidebar">
+
+                    {/* 検索エリア */}
+                    <div className="search-bar">
+                        <input 
+                            type="text" 
+                            placeholder="AIであいまい検索..." 
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleAISearch(e.target.value)}
+                        />
+                        <button onClick={handleAISearch}>検索</button>
+                    </div>
+
                     <div className="sidebar-header">CHANNELS</div>
                     {tabs.map(name => (
                         <div 

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -16,6 +17,8 @@ import (
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
 	_ "modernc.org/sqlite"
+
+	"github.com/ollama/ollama/api"
 )
 
 type MessageSummary struct {
@@ -36,9 +39,15 @@ type Channel struct {
 }
 
 type App struct {
-	ctx context.Context
-	srv *gmail.Service
-	db  *sql.DB
+	ctx    context.Context
+	srv    *gmail.Service
+	db     *sql.DB
+	store  *Store
+	ollama *api.Client
+}
+type SearchResult struct {
+	ID    string  `json:"id"`
+	Score float32 `json:"score"`
 }
 
 func NewApp() *App {
@@ -89,6 +98,15 @@ func (a *App) startup(ctx context.Context) {
 	fmt.Println("✅ インデックスの作成/確認が完了しました")
 
 	a.loadChannelsFromJson()
+
+	s, err := NewStore(a.db)
+	if err != nil {
+		panic(err)
+	}
+	a.store = s
+
+	ollama_client, _ := api.ClientFromEnvironment()
+	a.ollama = ollama_client
 
 	// Gmail API の初期化 (credentials.json と token.json がある前提)
 	// a.srv = srv
@@ -296,9 +314,20 @@ func (a *App) GetMessageBody(id string) (string, error) {
 		}
 	}()
 
+	go func(msgID string, text string) {
+		// テキストが空でなければベクトル化して保存
+		if text != "" {
+			err := a.SyncEmailVector(msgID, text)
+			if err != nil {
+				fmt.Printf("AI学習失敗: %v\n", err)
+			}
+		}
+	}(id, body)
+
 	return body, nil
 }
 
+/*
 func (a *App) GetMessageBody_simple(id string) (string, error) {
 	msg, err := a.srv.Users.Messages.Get("me", id).Format("full").Do()
 	if err != nil {
@@ -311,6 +340,7 @@ func (a *App) GetMessageBody_simple(id string) (string, error) {
 
 	return body, nil
 }
+*/
 
 func (a *App) extractBody(part *gmail.MessagePart) string {
 	// プレーンテキストの場合 (text/plain)
@@ -391,4 +421,80 @@ func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
 
 	// 次のページの合言葉を返す
 	return res.NextPageToken, nil
+}
+
+// AISearch は「あいまい検索」を実行して、スコアの高い順に ID を返します
+func (a *App) AISearch(query string) ([]SearchResult, error) {
+	// 1. 検索クエリをベクトル化
+	req := &api.EmbeddingRequest{
+		Model:  "nomic-embed-text",
+		Prompt: query,
+	}
+	resp, err := a.ollama.Embeddings(context.Background(), req)
+	if err != nil {
+		return nil, err
+	}
+	queryVec := resp.Embedding
+
+	// 2. DBから全データを取得（本来は専門のベクトルDBを使いますが、数千通ならこれで爆速です）
+	rows, err := a.db.Query("SELECT id, vector FROM email_vectors")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var allResults []SearchResult
+	for rows.Next() {
+		var id string
+		var vecBytes []byte
+		rows.Scan(&id, &vecBytes)
+
+		var dbVec []float32
+		if err := json.Unmarshal(vecBytes, &dbVec); err != nil {
+			continue
+		}
+
+		// 3. 類似度（ドット積）の計算
+		var score float32
+		for i := 0; i < len(queryVec); i++ {
+			score += float32(queryVec[i]) * float32(dbVec[i])
+		}
+		allResults = append(allResults, SearchResult{ID: id, Score: score})
+	}
+
+	// 4. スコアが高い順（降順）にソート
+	sort.Slice(allResults, func(i, j int) bool {
+		return allResults[i].Score > allResults[j].Score
+	})
+
+	// 上位10件程度を返す（Wailsのフロントエンドへ）
+	if len(allResults) > 10 {
+		return allResults[:10], nil
+	}
+	return allResults, nil
+}
+
+// GetAISearchResults は AI 検索の結果を元に、メッセージ詳細のリストを返します
+func (a *App) GetAISearchResults(query string) ([]MessageSummary, error) {
+	// 1. まずは既存の AISearch ロジックで ID とスコアを取得
+	// (先ほど作った AISearch 関数を流用するか、そのロジックをここに書く)
+	searchResults, err := a.AISearch(query)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. ID だけの配列を作る
+	var ids []string
+	for _, res := range searchResults {
+		ids = append(ids, res.ID)
+	}
+
+	// 3. DB から詳細情報を取得（a.store は db.go で作った Store）
+	msgs, err := a.store.GetMessagesByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("msgs: %s\n", msgs)
+	return msgs, nil
 }
