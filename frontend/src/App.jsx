@@ -9,6 +9,7 @@ function App() {
     const [selectedMsg, setSelectedMsg] = useState(null);
     const [fullBody, setFullBody] = useState("");
     const [loadingBody, setLoadingBody] = useState(false);
+    const [loading, setLoading] = useState(false);
     const [nextPageToken, setNextPageToken] = useState("");
 
     const handleLoadMore = async () => {
@@ -78,10 +79,12 @@ function App() {
             setLoadingBody(false); // ロック解除
         }
 
+        /*
         setTimeout(async () => {
             const data = await GetMessagesByChannel(activeTab);
             setMessages(data || []);
         }, 500);
+        */
     };
 
     return (
@@ -116,7 +119,7 @@ function App() {
                                 <div className="from">{m.from}</div>
                             </div>
                         ))}
-                        {nextPageToken && (
+                        {messages.length>0 && (
                             <button onClick={handleLoadMore} disabled={loading} className="load-more">
                                 {loading ? "読み込み中・・・" : "さらに500件読み込む"}
                             </button>
