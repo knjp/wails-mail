@@ -1,6 +1,6 @@
 import {useState, useEffect} from 'react';
 import './App.css';
-import {SyncMessages, GetMessagesByChannel, GetMessageBody, GetChannels, SyncHistoricalMessages, GetAISearchResults} from "../wailsjs/go/main/App";
+import {SyncMessages, GetMessagesByChannel, GetMessageBody, GetChannels, SyncHistoricalMessages, GetAISearchResults, SummarizeEmail} from "../wailsjs/go/main/App";
 
 function App() {
     const [messages, setMessages] = useState([]);
@@ -12,7 +12,8 @@ function App() {
     const [loading, setLoading] = useState(false);
     const [nextPageToken, setNextPageToken] = useState("");
     const [query, setQuery] = useState("");
-    const [results, setResults] = useState([]);
+    const [summary, setSummary] = useState("")
+    //const [results, setResults] = useState([]);
 
 
     const handleLoadMore = async () => {
@@ -38,8 +39,6 @@ function App() {
             } else {
                 alert("該当するメールが見つかりませんでした。");
             }
-            //const filtered = messages.filter(m => searchResults.some(r => r.id === m.id));
-            //setMessages(filtered);
         } catch (err) {
             console.error("検索失敗:", err);
         }
@@ -88,6 +87,7 @@ function App() {
     
         setSelectedMsg(msg);
         setFullBody("読み込み中...");
+        setSummary("");
         setLoadingBody(true); // ロック開始
     
         try {
@@ -100,12 +100,14 @@ function App() {
             setLoadingBody(false); // ロック解除
         }
 
-        /*
+        SummarizeEmail(msg.id).then(res =>{
+            setSummary(res);
+        });
+
         setTimeout(async () => {
             const data = await GetMessagesByChannel(activeTab);
             setMessages(data || []);
         }, 500);
-        */
     };
 
     return (
@@ -150,7 +152,14 @@ function App() {
                                 className={`mail-item ${selectedMsg?.id === m.id ? 'selected' : ''}`} 
                                 onClick={() => handleSelect(m)}
                             >
-                                <div className="subject">{m.subject}</div>
+                                <div className="subject">{m.subject}
+                                    {m.importance >= 4 && (
+                                    <span className={`importance-badge level-${m.importance}`}>
+                                        {m.importance === 5 ? "🔥 CRITICAL" : "⚡ IMPORTANT"}
+                                    </span>
+                                    )}
+                                </div>
+
                                 <div className="from">{m.from}</div>
                             </div>
                         ))}
@@ -165,7 +174,15 @@ function App() {
                 <div className="main-content">
                     {selectedMsg ? (
                         <div className="email-view">
-                            <div className="email-header"><h3>{selectedMsg.subject}</h3><h3>{selectedMsg.from}<br></br>{selectedMsg.date}</h3></div>
+                            <div className="email-header">
+                                <h3>{selectedMsg.subject}</h3><h3>{selectedMsg.from}<br></br>{selectedMsg.date}</h3>
+                                {summary && (
+                                    <div className="ai-summary-card">
+                                        <span className="ai-badge">AI SUMMARY</span>
+                                        <p>{summary}</p>
+                                    </div>
+                                )}
+                            </div>
                             <div className="email-body-container">
                                 <iframe
                                     key={selectedMsg.id}

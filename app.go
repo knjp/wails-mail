@@ -9,7 +9,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -22,11 +25,12 @@ import (
 )
 
 type MessageSummary struct {
-	ID      string `json:"id"`
-	From    string `json:"from"`
-	Subject string `json:"subject"`
-	Snippet string `json:"snippet"`
-	Date    string `json:"date"`
+	ID         string `json:"id"`
+	From       string `json:"from"`
+	Subject    string `json:"subject"`
+	Snippet    string `json:"snippet"`
+	Importance string `json:"importance"`
+	Date       string `json:"date"`
 }
 
 type ChannelConfig struct {
@@ -86,7 +90,11 @@ func (a *App) startup(ctx context.Context) {
 
 	// テーブル作成
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
-		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp DATETIME, body TEXT, is_read INTEGER DEFAULT 0
+		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp DATETIME,
+		body TEXT,
+		summary TEXT,
+		is_read INTEGER DEFAULT 0,
+		importance INTEGER DEFAULT 0
 	);`)
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY, name TEXT UNIQUE, sql_condition TEXT);`)
 
@@ -240,7 +248,7 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 		condition = "1=1"
 	}
 
-	query := fmt.Sprintf("SELECT id, sender, subject, snippet, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	// query := fmt.Sprintf("SELECT id, sender, subject, snippet, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	rows, err := a.db.Query(query)
 	if err != nil {
@@ -252,7 +260,7 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 	for rows.Next() {
 		var m MessageSummary
 		var ts string
-		rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &ts)
+		rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &m.Importance, &ts)
 		m.Date = ts
 		results = append(results, m)
 	}
@@ -324,6 +332,20 @@ func (a *App) GetMessageBody(id string) (string, error) {
 		}
 	}(id, body)
 
+	go func(msgID string, content string) {
+		if content != "" {
+			fmt.Printf("🤖 Ollama 要約開始: %s\n", msgID)
+			_, err := a.SummarizeEmail(msgID) // 先ほど作成したキャッシュ機能付き関数
+			if err != nil {
+				fmt.Printf("Ollama 要約失敗: %v\n", err)
+			} else {
+				fmt.Printf("✅ Ollama 要約完了: %s\n", msgID)
+				// 必要なら Wails のイベントで React に「できたよ！」と通知も可能
+				// runtime.EventsEmit(a.ctx, "summary_ready", msgID)
+			}
+		}
+	}(id, body)
+
 	return body, nil
 }
 
@@ -365,9 +387,10 @@ func (a *App) extractBody(part *gmail.MessagePart) string {
 	}
 	return ""
 }
+
 func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
 	if a.srv == nil {
-		return "", fmt.Errorf("API未初期化")
+		return "", fmt.Errorf("SyncHistoricalMessage: API未初期化")
 	}
 
 	// 1. 最新500件を取得（pageTokenがあれば続きから）
@@ -497,4 +520,84 @@ func (a *App) GetAISearchResults(query string) ([]MessageSummary, error) {
 
 	fmt.Printf("msgs: %s\n", msgs)
 	return msgs, nil
+}
+
+func (a *App) SummarizeEmail(id string) (string, error) {
+	// 1. キャッシュチェック
+	var cached string
+	a.db.QueryRow("SELECT summary FROM messages WHERE id = ?", id).Scan(&cached)
+	if len(cached) > 0 {
+		return cached, nil
+	}
+
+	// 2. 本文取得
+	var body string
+	a.db.QueryRow("SELECT body FROM messages WHERE id = ?", id).Scan(&body)
+	if len(body) == 0 {
+		return "本文がありません", nil
+	}
+
+	// 3. Ollama 呼び出し
+	req := &api.GenerateRequest{
+		Model: "schroneko/gemma-2-2b-jpn-it", // または "llama3" など
+		//Prompt: "以下のメールを3行で要約して:\n\n" + body,
+		Prompt: "次のメールを3〜5行で構造化して要約してください。\n\n" + body,
+		Stream: new(bool), // false
+	}
+
+	var summary string
+	err := a.ollama.Generate(a.ctx, req, func(resp api.GenerateResponse) error {
+		summary = resp.Response
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	// --- 🔴 無粋なタグを掃除する 🔴 ---
+	summary = strings.ReplaceAll(summary, "</start_of_turn>", "")
+	summary = strings.ReplaceAll(summary, "</end_of_turn>", "")
+	summary = strings.TrimSpace(summary) // 前後の余計な改行も消す
+	// ------------------------------
+
+	prompt2 := "次の内容を10文字程度で一言で表してください。\n\n" + summary
+	shortSummary := &api.GenerateRequest{
+		Model:  "schroneko/gemma-2-2b-jpn-it", // または "llama3" など
+		Prompt: prompt2,
+		Stream: new(bool), // false
+	}
+
+	var summary2 string
+	err = a.ollama.Generate(a.ctx, shortSummary, func(resp api.GenerateResponse) error {
+		summary2 = resp.Response
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	prompt3 := "この要約を元に、重要度を1〜5の数字1文字だけで判定してください。1は広告、5は至急です。\n\n" + summary2
+	importanceStr := &api.GenerateRequest{
+		Model:  "schroneko/gemma-2-2b-jpn-it", // または "llama3" など
+		Prompt: prompt3,
+		Stream: new(bool), // false
+	}
+	var importance string
+	err = a.ollama.Generate(a.ctx, importanceStr, func(resp api.GenerateResponse) error {
+		importance = resp.Response
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	re := regexp.MustCompile(`\d`)
+	match := re.FindString(importance)
+	finalVal := 0
+	if match != "" {
+		finalVal, _ = strconv.Atoi(match)
+	}
+
+	// 4. SQLite にキャッシュ
+	a.db.Exec("UPDATE messages SET summary = ?, importance = ? WHERE id = ?", summary, finalVal, id)
+
+	return summary, nil
 }
