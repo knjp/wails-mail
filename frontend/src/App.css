@@ -242,3 +242,18 @@ body {
   margin-bottom: 8px;
   display: inline-block;
 }
+
+.delete-btn {
+    padding: 6px 12px;
+    background-color: #fee2e2;
+    color: #dc2626;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.2s;
+}
+.delete-btn:hover {
+    background-color: #dc2626;
+    color: white;
+}

@@ -525,6 +525,7 @@ func (a *App) GetAISearchResults(query string) ([]MessageSummary, error) {
 func (a *App) SummarizeEmail(id string) (string, error) {
 	// 1. キャッシュチェック
 	var cached string
+
 	a.db.QueryRow("SELECT summary FROM messages WHERE id = ?", id).Scan(&cached)
 	if len(cached) > 0 {
 		return cached, nil
@@ -538,10 +539,14 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 	}
 
 	// 3. Ollama 呼び出し
+	//lollamaModel := "qwen2.5:1.5b" // または "llama3" など
+	//ollamaModel01 := "llama3.1:8b-instruct-q4_K_M"
+	//ollamaModel1 := "schroneko/gemma-2-2b-jpn-it" // または "llama3" など
+	ollamaModel2 := "llama3.1:8b-instruct-q4_K_M"
 	req := &api.GenerateRequest{
-		Model: "schroneko/gemma-2-2b-jpn-it", // または "llama3" など
-		//Prompt: "以下のメールを3行で要約して:\n\n" + body,
-		Prompt: "次のメールを3〜5行で構造化して要約してください。\n\n" + body,
+		Model:  ollamaModel2,
+		Prompt: "以下のメールを3行で要約して:\n\n" + body,
+		//Prompt: "次のメールを3〜5行で構造化して要約してください。\n\n" + body,
 		Stream: new(bool), // false
 	}
 
@@ -561,7 +566,7 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 
 	prompt2 := "次の内容を10文字程度で一言で表してください。\n\n" + summary
 	shortSummary := &api.GenerateRequest{
-		Model:  "schroneko/gemma-2-2b-jpn-it", // または "llama3" など
+		Model:  ollamaModel2,
 		Prompt: prompt2,
 		Stream: new(bool), // false
 	}
@@ -577,7 +582,7 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 
 	prompt3 := "この要約を元に、重要度を1〜5の数字1文字だけで判定してください。1は広告、5は至急です。\n\n" + summary2
 	importanceStr := &api.GenerateRequest{
-		Model:  "schroneko/gemma-2-2b-jpn-it", // または "llama3" など
+		Model:  ollamaModel2,
 		Prompt: prompt3,
 		Stream: new(bool), // false
 	}
@@ -600,4 +605,27 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 	a.db.Exec("UPDATE messages SET summary = ?, importance = ? WHERE id = ?", summary, finalVal, id)
 
 	return summary, nil
+}
+
+func (a *App) TrashMessage(id string) error {
+	if a.srv == nil {
+		return fmt.Errorf("Gmail APIが初期化されていません")
+	}
+
+	// 1. Googleサーバー上のメールをゴミ箱(TRASH)へ移動
+	// DeleteではなくTrashを使うのが「安全装置」としてのプロの選択
+	_, err := a.srv.Users.Messages.Trash("me", id).Do()
+	if err != nil {
+		return fmt.Errorf("Gmailサーバーでのゴミ箱移動に失敗: %v", err)
+	}
+
+	// 2. サーバー側が成功した時のみ、ローカルの SQLite からも削除
+	// これにより DB とサーバーの不整合を防ぐ (ストラ氏が喜ぶ整合性)
+	_, err = a.db.Exec("DELETE FROM messages WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("ローカルDBの更新に失敗: %v", err)
+	}
+
+	fmt.Printf("🗑️ ゴミ箱へ移動完了: %s\n", id)
+	return nil
 }

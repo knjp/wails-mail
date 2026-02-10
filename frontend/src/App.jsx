@@ -1,6 +1,6 @@
 import {useState, useEffect} from 'react';
 import './App.css';
-import {SyncMessages, GetMessagesByChannel, GetMessageBody, GetChannels, SyncHistoricalMessages, GetAISearchResults, SummarizeEmail} from "../wailsjs/go/main/App";
+import {SyncMessages, GetMessagesByChannel, GetMessageBody, GetChannels, SyncHistoricalMessages, GetAISearchResults, SummarizeEmail, TrashMessage} from "../wailsjs/go/main/App";
 
 function App() {
     const [messages, setMessages] = useState([]);
@@ -43,6 +43,21 @@ function App() {
             console.error("検索失敗:", err);
         }
     };
+
+    const handleDelete = async (msg) => {
+        // ストラ氏も安心の確認ダイアログ
+        if (!window.confirm(`「${msg.subject}」をゴミ箱に移動しますか？`)) return;
+    
+        try {
+            await TrashMessage(msg.id);
+            // 成功したら、現在のリストからそのメールを消す（再読み込み不要の爆速UI）
+            setMessages(prev => prev.filter(m => m.id !== msg.id));
+            setSelectedMsg(null);
+        } catch (err) {
+            alert("削除に失敗しました: " + err);
+        }
+    };
+
 
     const loadChannels = async (retryCount = 0) => {
         try {
@@ -182,6 +197,9 @@ function App() {
                                         <p>{summary}</p>
                                     </div>
                                 )}
+                                <button onClick={() => handleDelete(selectedMsg)} className="delete-btn">
+                                    🗑️ ゴミ箱へ
+                                </button>
                             </div>
                             <div className="email-body-container">
                                 <iframe
