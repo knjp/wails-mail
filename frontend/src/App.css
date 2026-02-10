@@ -167,8 +167,9 @@ body, html, #App {
   height: 100%;
 }
 
+/*  background:#64748b; */
 .email-header {
-  background:#64748b;
+  background:#ffffdd;
   padding: 20px;
   border-bottom: 1px solid var(--border-color);
 }

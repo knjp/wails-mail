@@ -58,6 +58,14 @@ function App() {
         }
     };
 
+    const getDaysLeft = (deadline) => {
+        if (!deadline || deadline === "なし") return null;
+        const today = new Date();
+        const target = new Date(deadline);
+        const diffTime = target - today;
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        return diffDays;
+    };
 
     const loadChannels = async (retryCount = 0) => {
         try {
@@ -75,11 +83,6 @@ function App() {
 
     // 1. 初期起動時にチャンネル一覧を取得
     useEffect(() => {
-        /*
-        GetChannels().then(res => {
-            if (res) setTabs(res.map(c => c.name));
-        });
-        */
        loadChannels();
     }, []);
 
@@ -124,6 +127,8 @@ function App() {
             setMessages(data || []);
         }, 500);
     };
+
+    const daysLeft = selectedMsg ? getDaysLeft(selectedMsg.deadline) : null;
 
     return (
         <div className="container">
@@ -191,6 +196,17 @@ function App() {
                         <div className="email-view">
                             <div className="email-header">
                                 <h3>{selectedMsg.subject}</h3><h3>{selectedMsg.from}<br></br>{selectedMsg.date}</h3>
+                                    {daysLeft !== null && (
+                                        <div className={`deadline-banner ${daysLeft < 0 ? 'overdue' : daysLeft <= 3 ? 'urgent' : ''}`}>
+                                            <span className="icon">📅</span>
+                                            <span className="text">
+                                            {daysLeft < 0 ? `期限切れ (${Math.abs(daysLeft)}日経過)` : 
+                                             daysLeft === 0 ? "本日締切！" : 
+                                            `期限まで あと ${daysLeft} 日 (${selectedMsg.deadline})`}
+                                            </span>
+                                        </div>
+                                    )}
+
                                 {summary && (
                                     <div className="ai-summary-card">
                                         <span className="ai-badge">AI SUMMARY</span>

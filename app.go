@@ -31,6 +31,7 @@ type MessageSummary struct {
 	Snippet    string `json:"snippet"`
 	Importance string `json:"importance"`
 	Date       string `json:"date"`
+	Deadline   string `json:"deadline"`
 }
 
 type ChannelConfig struct {
@@ -88,13 +89,16 @@ func (a *App) startup(ctx context.Context) {
 
 	a.db = db
 
+	a.loadChannelsFromJson()
+
 	// テーブル作成
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp DATETIME,
 		body TEXT,
 		summary TEXT,
 		is_read INTEGER DEFAULT 0,
-		importance INTEGER DEFAULT 0
+		importance INTEGER DEFAULT 0,
+		deadline DATETIME
 	);`)
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY, name TEXT UNIQUE, sql_condition TEXT);`)
 
@@ -103,9 +107,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// 日付（今日、今週など）で検索・ソートするためのインデックス
 	a.db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);")
-	fmt.Println("✅ インデックスの作成/確認が完了しました")
+	a.db.Exec("CREATE INDEX IF NOT EXISTS idx_messages_deadline ON messages(deadline);")
 
-	a.loadChannelsFromJson()
+	fmt.Println("✅ インデックスの作成/確認が完了しました")
 
 	s, err := NewStore(a.db)
 	if err != nil {
@@ -248,7 +252,7 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 		condition = "1=1"
 	}
 
-	query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, deadline, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	// query := fmt.Sprintf("SELECT id, sender, subject, snippet, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	rows, err := a.db.Query(query)
 	if err != nil {
@@ -260,7 +264,7 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 	for rows.Next() {
 		var m MessageSummary
 		var ts string
-		rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &m.Importance, &ts)
+		rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &m.Importance, &m.Deadline, &ts)
 		m.Date = ts
 		results = append(results, m)
 	}
@@ -539,14 +543,25 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 	}
 
 	// 3. Ollama 呼び出し
-	//lollamaModel := "qwen2.5:1.5b" // または "llama3" など
-	//ollamaModel01 := "llama3.1:8b-instruct-q4_K_M"
+	//ollamaModel1 := "llama3.1:8b-instruct-q4_K_M"
 	//ollamaModel1 := "schroneko/gemma-2-2b-jpn-it" // または "llama3" など
 	ollamaModel2 := "llama3.1:8b-instruct-q4_K_M"
+
+	prompt1 := fmt.Sprintf(`
+あなたは多忙なビジネスマン専用の要約エージェントです。
+以下のルールを厳守し、メールを要約してください。
+
+- 内容を【3行以内】の箇条書きに要約すること。
+- 挨拶や「以下が要約です」という説明は一切不要。
+- 本文をそのままコピーせず、要点のみを再構成すること。
+- 日本語で出力すること。
+
+メール内容: %s`, body)
+
 	req := &api.GenerateRequest{
-		Model:  ollamaModel2,
-		Prompt: "以下のメールを3行で要約して:\n\n" + body,
-		//Prompt: "次のメールを3〜5行で構造化して要約してください。\n\n" + body,
+		Model: ollamaModel2,
+		//Prompt: "以下のメールを3行で要約してください。要約のみを示してください、説明などはいりません。:\n\n" + body,
+		Prompt: prompt1,
 		Stream: new(bool), // false
 	}
 
@@ -586,6 +601,7 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 		Prompt: prompt3,
 		Stream: new(bool), // false
 	}
+
 	var importance string
 	err = a.ollama.Generate(a.ctx, importanceStr, func(resp api.GenerateResponse) error {
 		importance = resp.Response
@@ -603,6 +619,37 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 
 	// 4. SQLite にキャッシュ
 	a.db.Exec("UPDATE messages SET summary = ?, importance = ? WHERE id = ?", summary, finalVal, id)
+
+	prompt4 := fmt.Sprintf(`
+以下のメール本文から、返信期限、打合せ、イベント等の【最も重要な未来の日付】を1つだけ特定してください。
+- 形式：YYYY-MM-DD (例: 2024-02-14)
+- 今日は %s です。
+- 「来週」「明日」などは今日を基準に計算してください。
+- 日付が見当たらない場合は「なし」とだけ出力してください。
+- 解説は一切不要です。
+
+メール内容:
+%s`, time.Now().Format("2006-01-02"), body)
+
+	deadlineReq := &api.GenerateRequest{
+		Model:  ollamaModel2,
+		Prompt: prompt4,
+		Stream: new(bool),
+	}
+
+	var deadlineStr string
+	err = a.ollama.Generate(a.ctx, deadlineReq, func(resp api.GenerateResponse) error {
+		deadlineStr = resp.Response
+		return nil
+	})
+	// --- 正規表現で YYYY-MM-DD を抽出 ---
+	reDate := regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	finalDate := reDate.FindString(deadlineStr)
+
+	if finalDate != "" {
+		a.db.Exec("UPDATE messages SET deadline = ? WHERE id = ?", finalDate, id)
+		fmt.Printf("📅 期限を検出: %s (ID: %s)\n", finalDate, id)
+	}
 
 	return summary, nil
 }
