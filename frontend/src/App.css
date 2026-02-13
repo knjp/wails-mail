@@ -51,6 +51,7 @@ body, html, #App {
 /* 3ペインの横並び設定（ここが重要） */
 .main-layout {
   display: flex;
+  grid-template-columns: 200px 300px 1fr 300px; /* 4つ目のカラムを追加 */
   height: 100vh;
   width: 100vw;
   overflow: hidden;
@@ -107,11 +108,12 @@ body, html, #App {
   flex-direction: column;
   flex-shrink: 0;
 }
+
 .pane-header {
   padding: 15px;
   font-weight: bold;
   border-bottom: 1px solid var(--border-color);
-  background: #fff;
+  background: #cc9;
 }
 
 .list-container {
@@ -136,9 +138,48 @@ body, html, #App {
   margin-bottom: 4px;
 }
 
+.mail-meta-row {
+    display: flex;
+    justify-content: space-between; /* 差出人と日付を両端に分ける */
+    margin-top: 4px;
+}
+
+.list-snippet {
+    font-size: 0.8rem;
+    line-height: 1.2rem;       /* 1行の高さを明示的に指定 */
+    height: 2.4rem;            /* line-height × 2 で2行分に固定 */
+    overflow: hidden;          /* はみ出した分を隠す */
+    color: #64748b;
+    margin-top: 4px;
+    word-break: break-all;     /* 途中で途切れても良いように */
+    
+    /* 念のため残しておきますが、高さ固定が優先されます */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
 .from {
-  font-size: 0.85rem;
-  color: #64748b;
+    font-size: 0.85rem;
+    color: #475569;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mail-date {
+    font-size: 0.75rem;
+    color: #94a3b8;
+    flex-shrink: 0;
+    margin-left: 10px;
+}
+
+.email-date-detail {
+    font-size: 0.85rem;
+    color: #64748b;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 8px;
 }
 
 .snippet-preview {
@@ -190,6 +231,22 @@ body, html, #App {
   justify-content: center;
   height: 100%;
   color: #94a3b8;
+}
+
+/* 関連メールを表示するペイン */
+.related-pane {
+  width: 300px;
+  min-width: 300px;
+  max-width: 300px;
+  background-color: #fcfcfd;
+  border-left: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+}
+
+.related-list-container {
+  flex: 1;
+  overflow-y: auto;
 }
 
 /* --- ライトモード（基本設定） --- */
@@ -258,3 +315,18 @@ body {
     background-color: #dc2626;
     color: white;
 }
+
+.list-separator {
+    background-color: #f8fafc;
+    color: #64748b;
+    padding: 8px 16px;
+    font-size: 0.7rem;
+    font-weight: bold;
+    text-transform: uppercase;
+    border-bottom: 1px solid #e2e8f0;
+    position: sticky; /* スクロール時に上端に固定 */
+    top: 0;
+    z-index: 5;
+    letter-spacing: 0.05em;
+}
+

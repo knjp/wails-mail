@@ -30,13 +30,15 @@ type MessageSummary struct {
 	Subject    string `json:"subject"`
 	Snippet    string `json:"snippet"`
 	Importance string `json:"importance"`
-	Date       string `json:"date"`
-	Deadline   string `json:"deadline"`
+	//Date       string `json:"date"`
+	Timestamp int64  `json:"timestamp"`
+	Deadline  string `json:"deadline"`
 }
 
 type ChannelConfig struct {
-	Name  string `json:"name"`
-	Query string `json:"query"`
+	Name    string `json:"name"`
+	Query   string `json:"query"`
+	TTLdays string `json:"ttl_days"`
 }
 
 type Channel struct {
@@ -93,7 +95,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// テーブル作成
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
-		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp DATETIME,
+		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp INTEGER,
 		body TEXT,
 		summary TEXT,
 		is_read INTEGER DEFAULT 0,
@@ -141,6 +143,12 @@ func (a *App) startup(ctx context.Context) {
 		log.Printf("Client 取得失敗 (token.json を確認してください): %v", err)
 		return
 	}
+
+	// 起動して30秒後くらいに、ひっそりとお掃除を開始する
+	go func() {
+		time.Sleep(30 * time.Second)
+		a.RunAutoCleanup()
+	}()
 
 	// サービスを構造体のフィールドに代入（これで「API未初期化」が消えます）
 	srv, err := gmail.NewService(ctx, option.WithHTTPClient(client))
@@ -210,9 +218,10 @@ func (a *App) SyncMessages() error {
 		}
 
 		// 時間処理
-		// msInt, _ := strconv.ParseInt(msg.InternalDate, 10, 64)
-		t := time.Unix(0, msg.InternalDate*int64(time.Millisecond))
-		timestampStr := t.Format("2006-01-02 15:04:05")
+		//msInt, _ := strconv.ParseInt(msg.InternalDate, 10, 64)
+		//t := time.Unix(0, msg.InternalDate*int64(time.Millisecond))
+		//timestampStr := t.Format("2006-01-02 15:04:05")
+		msInt := msg.InternalDate
 
 		var sender, subject string
 		for _, h := range msg.Payload.Headers {
@@ -225,7 +234,7 @@ func (a *App) SyncMessages() error {
 		}
 
 		a.db.Exec(`INSERT OR IGNORE INTO messages (id, sender, subject, snippet, timestamp) VALUES (?, ?, ?, ?, ?)`,
-			msg.Id, sender, subject, msg.Snippet, timestampStr)
+			msg.Id, sender, subject, msg.Snippet, msInt)
 	}
 	return nil
 }
@@ -252,8 +261,9 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 		condition = "1=1"
 	}
 
-	query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, deadline, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	//query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, deadline, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	// query := fmt.Sprintf("SELECT id, sender, subject, snippet, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, deadline, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	rows, err := a.db.Query(query)
 	if err != nil {
 		return nil, err
@@ -263,9 +273,18 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 	var results []MessageSummary
 	for rows.Next() {
 		var m MessageSummary
-		var ts string
-		rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &m.Importance, &m.Deadline, &ts)
-		m.Date = ts
+		var deadlineNull sql.NullString
+		err := rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &m.Importance, &deadlineNull, &m.Timestamp)
+		if err != nil {
+			fmt.Println("Scan Error: ", err)
+			continue
+		}
+
+		if deadlineNull.Valid {
+			m.Deadline = deadlineNull.String
+		} else {
+			m.Deadline = ""
+		}
 		results = append(results, m)
 	}
 	return results, nil
@@ -436,14 +455,14 @@ func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
 		}
 
 		// 時間処理（JST変換）
-		t := time.Unix(0, msg.InternalDate*int64(time.Millisecond)).In(time.FixedZone("Asia/Tokyo", 9*60*60))
-		ts := t.Format("2006-01-02 15:04:05")
+		//t := time.Unix(0, msg.InternalDate*int64(time.Millisecond)).In(time.FixedZone("Asia/Tokyo", 9*60*60))
+		//ts := t.Format("2006-01-02 15:04:05")
 
 		// 【重要】INSERT OR REPLACE で、既読状態も最新に更新
 		_, err = a.db.Exec(`
 			INSERT OR REPLACE INTO messages (id, sender, subject, snippet, timestamp, is_read) 
 			VALUES (?, ?, ?, ?, ?, ?)`,
-			msg.Id, sender, subject, msg.Snippet, ts, isRead)
+			msg.Id, sender, subject, msg.Snippet, msg.InternalDate, isRead)
 	}
 
 	// 次のページの合言葉を返す
@@ -522,7 +541,7 @@ func (a *App) GetAISearchResults(query string) ([]MessageSummary, error) {
 		return nil, err
 	}
 
-	fmt.Printf("msgs: %s\n", msgs)
+	//fmt.Printf("msgs: %s\n", msgs)
 	return msgs, nil
 }
 
@@ -675,4 +694,37 @@ func (a *App) TrashMessage(id string) error {
 
 	fmt.Printf("🗑️ ゴミ箱へ移動完了: %s\n", id)
 	return nil
+}
+
+func (a *App) RunAutoCleanup() {
+	fmt.Println("🧹 お掃除作戦を開始します...")
+
+	// 1. チャンネル設定から TTL が設定されているものを取得
+	rows, err := a.db.Query("SELECT name, sql_condition, ttl_days FROM channels WHERE ttl_days > 0")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, condition string
+		var ttl int
+		rows.Scan(&name, &condition, &ttl)
+
+		// 2. 指定日数より古く、かつ条件に合うメールを特定
+		// Gmail側も消すなら、ここでIDを抽出して Trash API を呼び出します
+		// まずは安全に「ローカルのSQLiteから消す」だけの実装例：
+		query := fmt.Sprintf(
+			"DELETE FROM messages WHERE (%s) AND timestamp < (unixepoch('now', '-%d days') * 1000)",
+			condition, ttl,
+		)
+
+		result, err := a.db.Exec(query)
+		if err == nil {
+			count, _ := result.RowsAffected()
+			if count > 0 {
+				fmt.Printf("✨ [%s] チャンネルから %d 件の古いメールを整理しました\n", name, count)
+			}
+		}
+	}
 }

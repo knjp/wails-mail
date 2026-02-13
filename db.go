@@ -137,7 +137,7 @@ func (s *Store) GetMessagesByIDs(ids []string) ([]MessageSummary, error) {
 	var msgs []MessageSummary
 	for rows.Next() {
 		var m MessageSummary
-		if err := rows.Scan(&m.ID, &m.Subject, &m.From, &m.Date); err != nil {
+		if err := rows.Scan(&m.ID, &m.Subject, &m.From, &m.Timestamp); err != nil {
 			continue
 		}
 		msgs = append(msgs, m)

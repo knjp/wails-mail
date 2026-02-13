@@ -14,6 +14,7 @@ function App() {
     const [query, setQuery] = useState("");
     const [summary, setSummary] = useState("")
     //const [results, setResults] = useState([]);
+    const [relatedMsgs, setRelatedMsgs] = useState([])
 
 
     const handleLoadMore = async () => {
@@ -36,6 +37,7 @@ function App() {
 
             if(results && results.length > 0){
                 setMessages(results);
+                setActiveTab("🔍 検索結果");
             } else {
                 alert("該当するメールが見つかりませんでした。");
             }
@@ -70,9 +72,9 @@ function App() {
     const loadChannels = async (retryCount = 0) => {
         try {
             const res = await GetChannels();
-            if((!res || res.length === 0) && retryCount < 5){
+            if((!res || res.length === 0) && retryCount < 20){
                 console.log("Channels are not ready! Retry ...");
-                setTimeout(() => loadChannels(retryCount + 1), 500);
+                setTimeout(() => loadChannels(retryCount + 1), 5000);
                 return;
             }
             if (res) setTabs(res.map(c => c.name));
@@ -105,6 +107,8 @@ function App() {
     
         setSelectedMsg(msg);
         setFullBody("読み込み中...");
+        setRelatedMsgs([])
+
         setSummary("");
         setLoadingBody(true); // ロック開始
     
@@ -118,9 +122,13 @@ function App() {
             setLoadingBody(false); // ロック解除
         }
 
-        SummarizeEmail(msg.id).then(res =>{
-            setSummary(res);
-        });
+        const sum = await SummarizeEmail(msg.id)
+        setSummary(sum);
+
+        if (sum) {
+            const related = await GetAISearchResults(sum);
+            setRelatedMsgs(related.filter(r => r.id !== msg.id));
+        }
 
         setTimeout(async () => {
             const data = await GetMessagesByChannel(activeTab);
@@ -128,7 +136,63 @@ function App() {
         }, 500);
     };
 
+    //
+    // メッセージリストを日付順に整理
+    //
+    const renderMessageList = () => {
+        let lastGroup = ""; // 直前のグループを記憶
+
+        const now = new Date();            
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+        return messages.map((m) => {
+            const msgDate = new Date(m.timestamp);
+            const msgTime = msgDate.getTime();
+
+            let currentGroup = "";
+            if (msgTime >= todayStart) {
+                currentGroup = "今日";
+            } else if (msgTime >= todayStart - (7 * 24 * 60 * 60 * 1000)) {
+                currentGroup = "1週間以内";
+            } else if (msgTime >= todayStart - (30 * 24 * 60 * 60 * 1000)) {
+                currentGroup = "1ヶ月以内";
+            } else {
+                currentGroup = "それ以前";
+            }
+    
+            const displayDate = msgDate.toLocaleString('ja-JP');
+            // --- グループが変わった時だけセパレーターを出す ---
+            const showSeparator = currentGroup !== lastGroup;
+            lastGroup = currentGroup;
+    
+            return (
+                <div key={m.id}>
+                    {showSeparator && (
+                        <div className="list-separator">{currentGroup}</div>
+                    )}
+                    <div
+                        className={`mail-item ${selectedMsg?.id === m.id ? 'selected' : ''} importance-${m.importance}`}
+                        onClick={() => handleSelect(m)}
+                    >
+                        <div className="subject">
+                            {m.subject}
+                            {m.importance >= 4 && (
+                                <span className={`importance-badge level-${m.importance}`}>
+                                    {m.importance === 5 ? "🔥 CRITICAL" : "⚡ IMPORTANT"}
+                                </span>
+                            )}
+                        </div>
+                        <div className='list-snippet'> {m.snippet} </div>
+                        <div className="from">{m.from}</div>
+                        <div className="mail-date">{displayDate}</div>
+                    </div>
+                </div>
+            );
+        });
+    };
+
     const daysLeft = selectedMsg ? getDaysLeft(selectedMsg.deadline) : null;
+
 
     return (
         <div className="container">
@@ -166,23 +230,9 @@ function App() {
                     <div className="pane-header">{activeTab}</div>
                     <div className="list-container">
                         {messages.length === 0 && <div className="info">メールがありません</div>}
-                        {messages.map(m => (
-                            <div
-                                key={m.id} 
-                                className={`mail-item ${selectedMsg?.id === m.id ? 'selected' : ''}`} 
-                                onClick={() => handleSelect(m)}
-                            >
-                                <div className="subject">{m.subject}
-                                    {m.importance >= 4 && (
-                                    <span className={`importance-badge level-${m.importance}`}>
-                                        {m.importance === 5 ? "🔥 CRITICAL" : "⚡ IMPORTANT"}
-                                    </span>
-                                    )}
-                                </div>
 
-                                <div className="from">{m.from}</div>
-                            </div>
-                        ))}
+                        { renderMessageList() }
+
                         {messages.length>0 && (
                             <button onClick={handleLoadMore} disabled={loading} className="load-more">
                                 {loading ? "読み込み中・・・" : "さらに500件読み込む"}
@@ -195,7 +245,10 @@ function App() {
                     {selectedMsg ? (
                         <div className="email-view">
                             <div className="email-header">
-                                <h3>{selectedMsg.subject}</h3><h3>{selectedMsg.from}<br></br>{selectedMsg.date}</h3>
+                                <h3>{selectedMsg.subject}</h3><h3>{selectedMsg.from}</h3>
+                                    <div className="email-date-detail">
+                                       📅 {new Date(selectedMsg.timestamp).toLocaleString('ja-JP')}
+                                    </div>
                                     {daysLeft !== null && (
                                         <div className={`deadline-banner ${daysLeft < 0 ? 'overdue' : daysLeft <= 3 ? 'urgent' : ''}`}>
                                             <span className="icon">📅</span>
@@ -228,6 +281,20 @@ function App() {
                         </div>
                     ) : <div className="empty-state">選択してください</div>}
                 </div>
+                {/* 🌟 4つ目のペイン：関連コンテキスト 🌟 */}
+                <div className="related-pane">
+                    <div className="pane-header">🔗 関連・過去の経緯</div>
+                    <div className="related-list-container">
+                        {relatedMsgs.length === 0 && <div className="info">関連なし</div>}
+                        {relatedMsgs.map(rm => (
+                            <div key={rm.id} className="mail-item related-item" onClick={() => handleSelect(rm)}>
+                                <div className="subject-small">{rm.subject}</div>
+                                <div className="date-small">{new Date(rm.timestamp).toLocaleDateString()}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
             </div>
         </div>
     );
