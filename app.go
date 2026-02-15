@@ -27,6 +27,7 @@ import (
 type MessageSummary struct {
 	ID         string `json:"id"`
 	From       string `json:"from"`
+	Recipient  string `json:"recipient"`
 	Subject    string `json:"subject"`
 	Snippet    string `json:"snippet"`
 	Importance string `json:"importance"`
@@ -95,7 +96,11 @@ func (a *App) startup(ctx context.Context) {
 
 	// テーブル作成
 	a.db.Exec(`CREATE TABLE IF NOT EXISTS messages (
-		id TEXT PRIMARY KEY, sender TEXT, subject TEXT, snippet TEXT, timestamp INTEGER,
+		id TEXT PRIMARY KEY, sender TEXT,
+		recipient TEXT,
+		subject TEXT,
+		snippet TEXT,
+		timestamp INTEGER,
 		body TEXT,
 		summary TEXT,
 		is_read INTEGER DEFAULT 0,
@@ -207,7 +212,7 @@ func (a *App) SyncMessages() error {
 	if a.srv == nil {
 		return fmt.Errorf("API未初期化")
 	}
-	res, err := a.srv.Users.Messages.List("me").MaxResults(20).Do()
+	res, err := a.srv.Users.Messages.List("me").MaxResults(50).Do()
 	if err != nil {
 		return err
 	}
@@ -219,7 +224,7 @@ func (a *App) SyncMessages() error {
 		}
 		// msInt := msg.InternalDate
 
-		var sender, subject string
+		var sender, subject, to, cc string
 		for _, h := range msg.Payload.Headers {
 			if h.Name == "From" {
 				sender = h.Value
@@ -227,18 +232,26 @@ func (a *App) SyncMessages() error {
 			if h.Name == "Subject" {
 				subject = h.Value
 			}
+			if h.Name == "To" {
+				to = h.Value
+			}
+			if h.Name == "Cc" {
+				cc = h.Value
+			}
 		}
+		combinedRecipient := to + " " + cc
 
-		a.db.Exec(`INSERT OR IGNORE INTO messages (id, sender, subject, snippet, timestamp) VALUES (?, ?, ?, ?, ?)`,
-			msg.Id, sender, subject, msg.Snippet, msg.InternalDate)
+		a.db.Exec(`INSERT OR IGNORE INTO messages (id, sender, recipient, subject, snippet, timestamp) VALUES (?, ?, ?, ?, ?, ?)`,
+			msg.Id, sender, combinedRecipient, subject, msg.Snippet, msg.InternalDate)
 
-		go func(id string, subject string, sender string, snippet string) {
+		go func(id string, subject string, sender string, recipient string, snippet string) {
 			if snippet != "" && subject == "" {
 				return
 			}
 			// 🌟 情報の「盛り合わせ」を作る 🌟
 			// 形式はAIが理解しやすい自然な形にします
-			combinedText := fmt.Sprintf("From: %s\nSubject: %s\nSnippet: %s", sender, subject, snippet)
+			combinedText := fmt.Sprintf("From: %s\nTo: %s\nSubject: %s\nSnippet: %s",
+				sender, recipient, subject, snippet)
 			limit := 4000
 			if len(combinedText) > limit {
 				combinedText = combinedText[:limit]
@@ -250,7 +263,7 @@ func (a *App) SyncMessages() error {
 				fmt.Printf("強化ベクトル化失敗: %v\n", err)
 			}
 
-		}(m.Id, subject, sender, msg.Snippet)
+		}(m.Id, subject, sender, combinedRecipient, msg.Snippet)
 	}
 	return nil
 }
@@ -277,9 +290,7 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 		condition = "1=1"
 	}
 
-	//query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, deadline, datetime(timestamp, '+9 hours') as jst_time FROM messages WHERE %s ORDER BY timestamp DESC", condition)
-	// query := fmt.Sprintf("SELECT id, sender, subject, snippet, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
-	query := fmt.Sprintf("SELECT id, sender, subject, snippet, importance, deadline, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
+	query := fmt.Sprintf("SELECT id, sender, recipient, subject, snippet, importance, deadline, timestamp FROM messages WHERE %s ORDER BY timestamp DESC", condition)
 	rows, err := a.db.Query(query)
 	if err != nil {
 		return nil, err
@@ -290,7 +301,7 @@ func (a *App) GetMessagesByChannel(channelName string) ([]MessageSummary, error)
 	for rows.Next() {
 		var m MessageSummary
 		var deadlineNull sql.NullString
-		err := rows.Scan(&m.ID, &m.From, &m.Subject, &m.Snippet, &m.Importance, &deadlineNull, &m.Timestamp)
+		err := rows.Scan(&m.ID, &m.From, &m.Recipient, &m.Subject, &m.Snippet, &m.Importance, &deadlineNull, &m.Timestamp)
 		if err != nil {
 			fmt.Println("Scan Error: ", err)
 			continue
@@ -455,7 +466,7 @@ func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
 		}
 
 		// ヘッダー解析（差出人・件名）
-		var sender, subject string
+		var sender, subject, to, cc string
 		for _, h := range msg.Payload.Headers {
 			if h.Name == "From" {
 				sender = h.Value
@@ -463,21 +474,29 @@ func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
 			if h.Name == "Subject" {
 				subject = h.Value
 			}
+			if h.Name == "To" {
+				to = h.Value
+			}
+			if h.Name == "Cc" {
+				cc = h.Value
+			}
 		}
+		combinedRecipient := to + " " + cc
 
 		// 【重要】INSERT OR REPLACE で、既読状態も最新に更新
 		_, err = a.db.Exec(`
-			INSERT OR REPLACE INTO messages (id, sender, subject, snippet, timestamp, is_read) 
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			msg.Id, sender, subject, msg.Snippet, msg.InternalDate, isRead)
+			INSERT OR REPLACE INTO messages (id, sender, recipient, subject, snippet, timestamp, is_read) 
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			msg.Id, sender, combinedRecipient, subject, msg.Snippet, msg.InternalDate, isRead)
 
-		go func(id string, subject string, sender string, snippet string) {
+		go func(id string, subject string, sender string, recipient string, snippet string) {
 			if snippet != "" && subject == "" {
 				return
 			}
 			// 🌟 情報の「盛り合わせ」を作る 🌟
 			// 形式はAIが理解しやすい自然な形にします
-			combinedText := fmt.Sprintf("From: %s\nSubject: %s\nSnippet: %s", sender, subject, snippet)
+			combinedText := fmt.Sprintf("From: %s\nTo: %s\nSubject: %s\nSnippet: %s",
+				sender, recipient, subject, snippet)
 			limit := 4000
 			if len(combinedText) > limit {
 				combinedText = combinedText[:limit]
@@ -489,7 +508,7 @@ func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
 				fmt.Printf("強化ベクトル化失敗: %v\n", err)
 			}
 
-		}(m.Id, subject, sender, msg.Snippet)
+		}(m.Id, subject, sender, combinedRecipient, msg.Snippet)
 	}
 
 	// 次のページの合言葉を返す

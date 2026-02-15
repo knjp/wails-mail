@@ -200,12 +200,59 @@ body, html, #App {
 }
 
 .email-view {
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: white;
+}
+
+.email-header-top {
+    padding: 20px;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    background: #c0cc00;
+}
+
+.detail-subject {
+    font-size: 1.4rem;
+    margin-bottom: 8px;
+    color: #1a1a1a;
+}
+
+.detail-meta {
+    font-size: 0.9rem;
+    color: #666;
+}
+
+.detail-from { font-weight: bold; margin-right: 15px; }
+
+.header-actions { display: flex; gap: 8px; }
+
+.ai-info-section {
+    padding: 15px 20px;
+    background-color: #f8fafc; /* さりげないAIセクションの背景色 */
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.ai-summary-content {
+    margin-top: 10px;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: #1e293b;
+    border-left: 3px solid #3b82f6;
+    padding-left: 15px;
+}
+
+.email-body-container {
+    flex: 1; /* 残りの高さをすべて使う */
+}
+
+.email-body-frame {
+    width: 100%;
+    height: 100%;
+    border: none;
 }
 
 /*  background:#64748b; */
@@ -213,16 +260,6 @@ body, html, #App {
   background:#ffffdd;
   padding: 20px;
   border-bottom: 1px solid var(--border-color);
-}
-
-.email-body-container {
-  flex: 1;
-}
-
-.email-body-frame {
-  width: 100%;
-  height: 100%;
-  border: none;
 }
 
 .empty-state {
@@ -289,6 +326,31 @@ body {
     line-height: 1.5;
     color: #1e40af;
 }
+
+.recipient-badge {
+    font-size: 0.6rem;
+    font-weight: bold;
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: middle;
+    text-transform: uppercase;
+}
+
+/* 自分宛：誠実な青 */
+.recipient-badge.direct {
+    background-color: #dbeafe;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+}
+
+/* ML宛：落ち着いたグレー */
+.recipient-badge.ml {
+    background-color: #f1f5f9;
+    color: #475569;
+    border: 1px solid #e2e8f0;
+}
+
 
 .ai-badge {
   font-size: 0.7rem;

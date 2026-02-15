@@ -188,7 +188,8 @@ function App() {
     const renderMessageList = () => {
         let lastGroup = ""; // 直前のグループを記憶
 
-        const now = new Date();            
+        const myAddress = "kiyoshi@tmu.ac.jp";
+        const now = new Date();
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
         return messages.map((m) => {
@@ -210,7 +211,10 @@ function App() {
             // --- グループが変わった時だけセパレーターを出す ---
             const showSeparator = currentGroup !== lastGroup;
             lastGroup = currentGroup;
-    
+
+            const isDirect = m.recipient && m.recipient.includes(myAddress);
+            const isML = m.recipient && !isDirect; // 自分宛でなければML（またはCC）とみなす
+
             return (
                 <div key={m.id}>
                     {showSeparator && (
@@ -221,6 +225,13 @@ function App() {
                         onClick={() => handleSelect(m)}
                     >
                         <div className="subject">
+                            {/* 🌟 宛先バッジを追加 🌟 */}
+                            {isDirect ? (
+                                <span className="recipient-badge direct">TO ME</span>
+                            ) : isML ? (
+                                <span className="recipient-badge ml">ML</span>
+                            ) : null}
+
                             {m.subject}
                             {m.importance >= 4 && (
                                 <span className={`importance-badge level-${m.importance}`}>
@@ -290,33 +301,54 @@ function App() {
                 <div className="main-content">
                     {selectedMsg ? (
                         <div className="email-view">
-                            <div className="email-header">
-                                <h3>{selectedMsg.subject}</h3><h3>{selectedMsg.from}</h3>
-                                    <div className="email-date-detail">
-                                       📅 {new Date(selectedMsg.timestamp).toLocaleString('ja-JP')}
+                            {/* 1. ヘッダー：件名と基本情報 */}
+                            <div className="email-header-top">
+                                <div className="header-main">
+                                    <h2 className="detail-subject">{selectedMsg.subject}</h2>
+                                    <div className="detail-meta">
+                                        <div className="meta-row-meta">
+                                            <span className="meta-label">From:</span>
+                                            <span className="detail-from">{selectedMsg.from}</span>
+                                        </div>
+                                        <div className="meta-row">
+                                            <span className="meta-label">To:</span>
+                                            <span className="detail-to">{selectedMsg.recipient || "（宛先なし）"}</span>
+                                        </div>
+                                        <span className="detail-date">
+                                            📅 {new Date(selectedMsg.timestamp).toLocaleString('ja-JP')}
+                                        </span>
                                     </div>
+                                </div>
+                                
+                                {/* 2. 右上のアクションボタン群 */}
+                                <div className="header-actions">
+                                    <button onClick={handleManualSummarize} disabled={isSummarizing} className="summary-btn">
+                                        {isSummarizing ? "⌛..." : "✨ 要約"}
+                                    </button>
+                                    <button onClick={() => handleDelete(selectedMsg)} className="delete-btn">
+                                        🗑️
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* 3. AI インフォメーション（期限と要約） */}
+                            {(daysLeft !== null || summary) && (
+                                <div className="ai-info-section">
                                     {daysLeft !== null && (
                                         <div className={`deadline-banner ${daysLeft < 0 ? 'overdue' : daysLeft <= 3 ? 'urgent' : ''}`}>
                                             <span className="icon">📅</span>
                                             <span className="text">
-                                            {daysLeft < 0 ? `期限切れ (${Math.abs(daysLeft)}日経過)` : 
-                                             daysLeft === 0 ? "本日締切！" : 
-                                            `期限まで あと ${daysLeft} 日 (${selectedMsg.deadline})`}
+                                                {daysLeft < 0 ? `期限切れ (${Math.abs(daysLeft)}日経過)` : 
+                                                 daysLeft === 0 ? "本日締切！" : 
+                                                 `${selectedMsg.deadline} まであと ${daysLeft} 日`}
                                             </span>
                                         </div>
                                     )}
-
-                                {summary ? (
-                                        <div className="ai-summary">{summary}</div>
-                                ) : (
-                                    <button onClick={handleManualSummarize} disabled={isSummarizing}>
-                                    {isSummarizing ? "AIが考え中..." : "✨ AIで要約する"}
-                                    </button>
-                                )}
-                                <button onClick={() => handleDelete(selectedMsg)} className="delete-btn">
-                                    🗑️ ゴミ箱へ
-                                </button>
-                            </div>
+                                    {summary && <div className="ai-summary-content">{summary}</div>}
+                                </div>
+                            )}
+                
+                            {/* 4. 本文 */}
                             <div className="email-body-container">
                                 <iframe
                                     key={selectedMsg.id}
@@ -326,8 +358,9 @@ function App() {
                                 />
                             </div>
                         </div>
-                    ) : <div className="empty-state">選択してください</div>}
+                    ) : <div className="empty-state">メールを選択してください</div>}
                 </div>
+
                 {/* 🌟 4つ目のペイン：関連コンテキスト 🌟 */}
                 <div className="related-pane">
                     <div className="pane-header">🔗 関連・過去の経緯</div>
