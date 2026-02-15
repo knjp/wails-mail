@@ -15,7 +15,14 @@ function App() {
     const [summary, setSummary] = useState("")
     //const [results, setResults] = useState([]);
     const [relatedMsgs, setRelatedMsgs] = useState([])
+    const [isSummarizing, setIsSummarizing] = useState(false);
 
+    const handleManualSummarize = async () => {
+        setIsSummarizing(true);
+        const sum = await SummarizeEmail(selectedMsg.id);
+        setSummary(sum);
+        setIsSummarizing(false);
+    };
 
     const handleLoadMore = async () => {
         setLoading(true);
@@ -103,6 +110,48 @@ function App() {
     }, [activeTab]);
 
     const handleSelect = async (msg) => {
+    if (loadingBody) return;
+
+    setSelectedMsg(msg);
+    setFullBody("読み込み中...");
+    setRelatedMsgs([]);
+    setSummary("");
+    setLoadingBody(true);
+
+    // --- 1. 【爆速】手元のスニペットで関連検索を即座に開始 ---
+    // 要約を待たないので、クリックした瞬間に右ペインが埋まり始めます
+    GetAISearchResults(msg.snippet).then(related => {
+        if (related) {
+            setRelatedMsgs(related.filter(r => r.id !== msg.id));
+        }
+    }).catch(err => console.error("関連検索エラー:", err));
+
+    try {
+        // --- 2. 本文取得 ---
+        const body = await GetMessageBody(msg.id);
+        setFullBody(body);
+
+        // --- 3. 本文が取れたら要約を開始 ---
+        // これも非同期で行い、でき次第表示する
+        //SummarizeEmail(msg.id).then(sum => {
+        //    setSummary(sum);
+        // });
+
+    } catch (err) {
+        console.error("本文取得エラー:", err);
+        setFullBody("エラーが発生しました。");
+    } finally {
+        setLoadingBody(false);
+    }
+
+    // 既読反映などのためのリスト更新
+    setTimeout(async () => {
+        const data = await GetMessagesByChannel(activeTab);
+        setMessages(data || []);
+    }, 500);
+};
+
+    const handleSelect2 = async (msg) => {
         if (loadingBody) return; // すでに読み込み中なら無視
     
         setSelectedMsg(msg);
@@ -122,11 +171,8 @@ function App() {
             setLoadingBody(false); // ロック解除
         }
 
-        const sum = await SummarizeEmail(msg.id)
-        setSummary(sum);
-
-        if (sum) {
-            const related = await GetAISearchResults(sum);
+        if (msg.Snippet) {
+            const related = await GetAISearchResults(msg.Snippet);
             setRelatedMsgs(related.filter(r => r.id !== msg.id));
         }
 
@@ -260,11 +306,12 @@ function App() {
                                         </div>
                                     )}
 
-                                {summary && (
-                                    <div className="ai-summary-card">
-                                        <span className="ai-badge">AI SUMMARY</span>
-                                        <p>{summary}</p>
-                                    </div>
+                                {summary ? (
+                                        <div className="ai-summary">{summary}</div>
+                                ) : (
+                                    <button onClick={handleManualSummarize} disabled={isSummarizing}>
+                                    {isSummarizing ? "AIが考え中..." : "✨ AIで要約する"}
+                                    </button>
                                 )}
                                 <button onClick={() => handleDelete(selectedMsg)} className="delete-btn">
                                     🗑️ ゴミ箱へ

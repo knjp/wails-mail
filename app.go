@@ -202,6 +202,7 @@ func saveToken(path string, token *oauth2.Token) {
 	defer f.Close()
 	json.NewEncoder(f).Encode(token)
 }
+
 func (a *App) SyncMessages() error {
 	if a.srv == nil {
 		return fmt.Errorf("API未初期化")
@@ -216,12 +217,7 @@ func (a *App) SyncMessages() error {
 		if err != nil {
 			continue
 		}
-
-		// 時間処理
-		//msInt, _ := strconv.ParseInt(msg.InternalDate, 10, 64)
-		//t := time.Unix(0, msg.InternalDate*int64(time.Millisecond))
-		//timestampStr := t.Format("2006-01-02 15:04:05")
-		msInt := msg.InternalDate
+		// msInt := msg.InternalDate
 
 		var sender, subject string
 		for _, h := range msg.Payload.Headers {
@@ -234,7 +230,27 @@ func (a *App) SyncMessages() error {
 		}
 
 		a.db.Exec(`INSERT OR IGNORE INTO messages (id, sender, subject, snippet, timestamp) VALUES (?, ?, ?, ?, ?)`,
-			msg.Id, sender, subject, msg.Snippet, msInt)
+			msg.Id, sender, subject, msg.Snippet, msg.InternalDate)
+
+		go func(id string, subject string, sender string, snippet string) {
+			if snippet != "" && subject == "" {
+				return
+			}
+			// 🌟 情報の「盛り合わせ」を作る 🌟
+			// 形式はAIが理解しやすい自然な形にします
+			combinedText := fmt.Sprintf("From: %s\nSubject: %s\nSnippet: %s", sender, subject, snippet)
+			limit := 4000
+			if len(combinedText) > limit {
+				combinedText = combinedText[:limit]
+			}
+
+			// これをベクトル化に回す
+			err := a.SyncEmailVector(id, combinedText)
+			if err != nil {
+				fmt.Printf("強化ベクトル化失敗: %v\n", err)
+			}
+
+		}(m.Id, subject, sender, msg.Snippet)
 	}
 	return nil
 }
@@ -345,25 +361,35 @@ func (a *App) GetMessageBody(id string) (string, error) {
 		}
 	}()
 
+	var subject, sender string
+	a.db.QueryRow("SELECT subject, sender FROM messages WHERE id = ?", id).Scan(&subject, &sender)
+
+	// 🌟 これらを全部混ぜて「完全版ベクトル」にする 🌟
+	fullText := fmt.Sprintf("From: %s\nSubject: %s\nBody: %s", sender, subject, body)
+	limit := 4000
+	if len(fullText) > limit {
+		fullText = fullText[:limit]
+	}
+
 	go func(msgID string, text string) {
-		// テキストが空でなければベクトル化して保存
 		if text != "" {
+			// スニペット版をこの「完全版」で上書き！
 			err := a.SyncEmailVector(msgID, text)
 			if err != nil {
-				fmt.Printf("AI学習失敗: %v\n", err)
+				fmt.Printf("完全版AI学習失敗: %v\n", err)
 			}
 		}
-	}(id, body)
+	}(id, fullText)
 
 	go func(msgID string, content string) {
 		if content != "" {
-			fmt.Printf("🤖 Ollama 要約開始: %s\n", msgID)
-			_, err := a.SummarizeEmail(msgID) // 先ほど作成したキャッシュ機能付き関数
+			fmt.Printf("🤖 Ollama 締め切り抽出開始: %s\n", msgID)
+			//_, err := a.SummarizeEmail(msgID) // 先ほど作成したキャッシュ機能付き関数
+			err := a.ExtractDeadlines(msgID) // 先ほど作成したキャッシュ機能付き関数
 			if err != nil {
-				fmt.Printf("Ollama 要約失敗: %v\n", err)
+				fmt.Printf("Ollama 締め切り抽出失敗: %v\n", err)
 			} else {
-				fmt.Printf("✅ Ollama 要約完了: %s\n", msgID)
-				// 必要なら Wails のイベントで React に「できたよ！」と通知も可能
+				fmt.Printf("✅ Ollama 締め切り抽出完了: %s\n", msgID)
 				// runtime.EventsEmit(a.ctx, "summary_ready", msgID)
 			}
 		}
@@ -371,21 +397,6 @@ func (a *App) GetMessageBody(id string) (string, error) {
 
 	return body, nil
 }
-
-/*
-func (a *App) GetMessageBody_simple(id string) (string, error) {
-	msg, err := a.srv.Users.Messages.Get("me", id).Format("full").Do()
-	if err != nil {
-		return "", err
-	}
-
-	// 簡易的な本文抽出（HTML優先）
-	body := a.extractBody(msg.Payload)
-	fmt.Printf("取得したメール(ID: %s) の本文サイズ: %d 文字\n", id, len(body))
-
-	return body, nil
-}
-*/
 
 func (a *App) extractBody(part *gmail.MessagePart) string {
 	// プレーンテキストの場合 (text/plain)
@@ -454,15 +465,31 @@ func (a *App) SyncHistoricalMessages(pageToken string) (string, error) {
 			}
 		}
 
-		// 時間処理（JST変換）
-		//t := time.Unix(0, msg.InternalDate*int64(time.Millisecond)).In(time.FixedZone("Asia/Tokyo", 9*60*60))
-		//ts := t.Format("2006-01-02 15:04:05")
-
 		// 【重要】INSERT OR REPLACE で、既読状態も最新に更新
 		_, err = a.db.Exec(`
 			INSERT OR REPLACE INTO messages (id, sender, subject, snippet, timestamp, is_read) 
 			VALUES (?, ?, ?, ?, ?, ?)`,
 			msg.Id, sender, subject, msg.Snippet, msg.InternalDate, isRead)
+
+		go func(id string, subject string, sender string, snippet string) {
+			if snippet != "" && subject == "" {
+				return
+			}
+			// 🌟 情報の「盛り合わせ」を作る 🌟
+			// 形式はAIが理解しやすい自然な形にします
+			combinedText := fmt.Sprintf("From: %s\nSubject: %s\nSnippet: %s", sender, subject, snippet)
+			limit := 4000
+			if len(combinedText) > limit {
+				combinedText = combinedText[:limit]
+			}
+
+			// これをベクトル化に回す
+			err := a.SyncEmailVector(id, combinedText)
+			if err != nil {
+				fmt.Printf("強化ベクトル化失敗: %v\n", err)
+			}
+
+		}(m.Id, subject, sender, msg.Snippet)
 	}
 
 	// 次のページの合言葉を返す
@@ -597,80 +624,156 @@ func (a *App) SummarizeEmail(id string) (string, error) {
 	summary = strings.ReplaceAll(summary, "</end_of_turn>", "")
 	summary = strings.TrimSpace(summary) // 前後の余計な改行も消す
 	// ------------------------------
-
-	prompt2 := "次の内容を10文字程度で一言で表してください。\n\n" + summary
-	shortSummary := &api.GenerateRequest{
-		Model:  ollamaModel2,
-		Prompt: prompt2,
-		Stream: new(bool), // false
-	}
-
-	var summary2 string
-	err = a.ollama.Generate(a.ctx, shortSummary, func(resp api.GenerateResponse) error {
-		summary2 = resp.Response
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-
-	prompt3 := "この要約を元に、重要度を1〜5の数字1文字だけで判定してください。1は広告、5は至急です。\n\n" + summary2
-	importanceStr := &api.GenerateRequest{
-		Model:  ollamaModel2,
-		Prompt: prompt3,
-		Stream: new(bool), // false
-	}
-
-	var importance string
-	err = a.ollama.Generate(a.ctx, importanceStr, func(resp api.GenerateResponse) error {
-		importance = resp.Response
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	re := regexp.MustCompile(`\d`)
-	match := re.FindString(importance)
-	finalVal := 0
-	if match != "" {
-		finalVal, _ = strconv.Atoi(match)
-	}
-
 	// 4. SQLite にキャッシュ
-	a.db.Exec("UPDATE messages SET summary = ?, importance = ? WHERE id = ?", summary, finalVal, id)
+	a.db.Exec("UPDATE messages SET summary = ?  WHERE id = ?", summary, id)
 
-	prompt4 := fmt.Sprintf(`
-以下のメール本文から、返信期限、打合せ、イベント等の【最も重要な未来の日付】を1つだけ特定してください。
-- 形式：YYYY-MM-DD (例: 2024-02-14)
-- 今日は %s です。
-- 「来週」「明日」などは今日を基準に計算してください。
-- 日付が見当たらない場合は「なし」とだけ出力してください。
-- 解説は一切不要です。
+	/*
+		prompt2 := "次の内容を10文字程度で一言で表してください。\n\n" + summary
+		shortSummary := &api.GenerateRequest{
+			Model:  ollamaModel2,
+			Prompt: prompt2,
+			Stream: new(bool), // false
+		}
 
-メール内容:
-%s`, time.Now().Format("2006-01-02"), body)
+		var summary2 string
+		err = a.ollama.Generate(a.ctx, shortSummary, func(resp api.GenerateResponse) error {
+			summary2 = resp.Response
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
 
-	deadlineReq := &api.GenerateRequest{
-		Model:  ollamaModel2,
-		Prompt: prompt4,
+		prompt3 := "この要約を元に、重要度を1〜5の数字1文字だけで判定してください。1は広告、5は至急です。\n\n" + summary2
+		importanceStr := &api.GenerateRequest{
+			Model:  ollamaModel2,
+			Prompt: prompt3,
+			Stream: new(bool), // false
+		}
+
+		var importance string
+		err = a.ollama.Generate(a.ctx, importanceStr, func(resp api.GenerateResponse) error {
+			importance = resp.Response
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		re := regexp.MustCompile(`\d`)
+		match := re.FindString(importance)
+		finalVal := 0
+		if match != "" {
+			finalVal, _ = strconv.Atoi(match)
+		}
+		a.db.Exec("UPDATE messages SET summary = ?, importance = ? WHERE id = ?", summary, finalVal, id)
+	*/
+
+	/*
+
+			prompt4 := fmt.Sprintf(`
+		以下のメール本文から、返信期限、打合せ、イベント等の【最も重要な未来の日付】を1つだけ特定してください。
+		- 形式：YYYY-MM-DD (例: 2024-02-14)
+		- 今日は %s です。
+		- 「来週」「明日」などは今日を基準に計算してください。
+		- 日付が見当たらない場合は「なし」とだけ出力してください。
+		- 解説は一切不要です。
+
+		メール内容:
+		%s`, time.Now().Format("2006-01-02"), body)
+
+			deadlineReq := &api.GenerateRequest{
+				Model:  ollamaModel2,
+				Prompt: prompt4,
+				Stream: new(bool),
+			}
+
+			var deadlineStr string
+			_ = a.ollama.Generate(a.ctx, deadlineReq, func(resp api.GenerateResponse) error {
+				deadlineStr = resp.Response
+				return nil
+			})
+			// --- 正規表現で YYYY-MM-DD を抽出 ---
+			reDate := regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+			finalDate := reDate.FindString(deadlineStr)
+
+			if finalDate != "" {
+				a.db.Exec("UPDATE messages SET deadline = ? WHERE id = ?", finalDate, id)
+				fmt.Printf("📅 期限を検出: %s (ID: %s)\n", finalDate, id)
+			}
+	*/
+
+	return summary, nil
+}
+
+func (a *App) ExtractDeadlines(id string) error {
+	var body string
+	//model := "llama3.1:8b-instruct-q4_K_M"
+	model := "qwen2.5:1.5b"
+	a.db.QueryRow("SELECT body FROM messages WHERE id = ?", id).Scan(&body)
+	if len(body) == 0 {
+		return nil
+	}
+
+	// プロンプトを合体させ、1回の呼び出しで済ませる
+	/*
+			prompt := fmt.Sprintf(`
+		以下のメールを解析し、2つの情報を抽出してください。
+		1. 【重要度】: 1(不要)から5(至急)の数値
+		2. 【期限】: 最も重要な未来の日付(YYYY-MM-DD)。なければ「なし」
+
+		今日は %s です。
+		解説は一切不要。結果のみを「重要度:数値, 期限:日付」の形式で答えてください。
+
+		メール内容: %s`, time.Now().Format("2006-01-02"), body)
+	*/
+
+	prompt := fmt.Sprintf(`
+あなたは世界一多忙なCEOの冷徹な秘書です。
+以下のメールを解析し、2つの情報を【極めて厳しく】抽出してください。
+
+1. 【重要度】: 1(不要)から5(至急)の数値
+   - 5: あなたが今すぐ返信しないと会社が潰れるレベルの緊急案件
+   - 3: 本人への確認が必要な、通常の業務連絡
+   - 1: 広告、メルマガ、自動通知、挨拶、後回しで良い報告
+   ※ 迷ったら「1」にしてください。
+
+2. 【期限】: 最も重要な未来の日付(YYYY-MM-DD)。なければ「なし」
+
+今日は %s です。
+結果のみを「重要度:数値, 期限:日付」の形式で答えてください。説明は一切不要。
+
+メール内容: %s`, time.Now().Format("2006-01-02"), body)
+
+	req := &api.GenerateRequest{
+		Model:  model,
+		Prompt: prompt,
 		Stream: new(bool),
 	}
 
-	var deadlineStr string
-	err = a.ollama.Generate(a.ctx, deadlineReq, func(resp api.GenerateResponse) error {
-		deadlineStr = resp.Response
+	var respText string
+	err := a.ollama.Generate(a.ctx, req, func(resp api.GenerateResponse) error {
+		respText += resp.Response
 		return nil
 	})
-	// --- 正規表現で YYYY-MM-DD を抽出 ---
-	reDate := regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
-	finalDate := reDate.FindString(deadlineStr)
-
-	if finalDate != "" {
-		a.db.Exec("UPDATE messages SET deadline = ? WHERE id = ?", finalDate, id)
-		fmt.Printf("📅 期限を検出: %s (ID: %s)\n", finalDate, id)
+	if err != nil {
+		return err
 	}
 
-	return summary, nil
+	fmt.Printf("📅 respText を検出: %s (ID: %s)\n", respText, id)
+	// 数値と日付を抽出
+	reImp := regexp.MustCompile(`\d`)
+	importance, _ := strconv.Atoi(reImp.FindString(respText))
+
+	reDate := regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	deadline := reDate.FindString(respText)
+
+	if deadline != "" {
+		fmt.Printf("📅 期限を検出: %s (ID: %s)\n", deadline, id)
+	}
+
+	// DB更新
+	a.db.Exec("UPDATE messages SET importance = ?, deadline = ? WHERE id = ?", importance, deadline, id)
+	return nil
 }
 
 func (a *App) TrashMessage(id string) error {
